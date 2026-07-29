@@ -36,6 +36,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:just_audio/just_audio.dart';
 
 import 'attentiveness_config.dart';
@@ -61,7 +62,7 @@ class AttentivenessMonitor {
   /// Live status you can listen to directly (e.g. in a ValueListenableBuilder
   /// to show a small "distracted" badge somewhere in the UI).
   final ValueNotifier<AttentivenessStatus> status =
-      ValueNotifier(AttentivenessStatus.unknown);
+  ValueNotifier(AttentivenessStatus.unknown);
 
   /// Fires once when the learner has been continuously distracted (looking
   /// away or eyes closed) for [AttentivenessConfig.inattentiveGracePeriod].
@@ -100,8 +101,11 @@ class AttentivenessMonitor {
   bool _faceMissingFired = false;
   bool _multiplePersonsFired = false;
 
+  final bool _external;
+
   AttentivenessMonitor({AttentivenessConfig? config})
       : config = config ?? const AttentivenessConfig(),
+        _external = false,
         _service = AttentivenessService(
           config: config ?? const AttentivenessConfig(),
         ) {
@@ -110,7 +114,33 @@ class AttentivenessMonitor {
     }
   }
 
+  /// Use when something else already owns the camera (e.g. a LiveKit call
+  /// screen). No camera is opened by this monitor — call [pushFrame]
+  /// yourself with frames captured however you like (a periodic snapshot
+  /// of the local video renderer, for instance).
+  AttentivenessMonitor.externalSource({AttentivenessConfig? config})
+      : config = config ?? const AttentivenessConfig(),
+        _external = true,
+        _service = AttentivenessService.externalSource(
+          config: config ?? const AttentivenessConfig(),
+        ) {
+    if (this.config.enableSoundAlert) {
+      _audioPlayer = AudioPlayer();
+    }
+  }
+
   bool get isRunning => _service.isRunning;
+
+  /// Feed one externally-captured frame. Only valid on a monitor created
+  /// via [AttentivenessMonitor.externalSource]. Call [start] once first —
+  /// it just spins up the face detector in this mode, no camera involved.
+  Future<void> pushFrame(InputImage inputImage) async {
+    if (!_external) {
+      throw StateError('pushFrame is only for AttentivenessMonitor.externalSource().');
+    }
+    print("InputImage ${inputImage.filePath}");
+    await _service.pushFrame(inputImage);
+  }
 
   /// Marks "don't show this again" for the rest of this video/section.
   /// Purely in-memory — nothing is written to disk, so a new video (new
@@ -134,9 +164,16 @@ class AttentivenessMonitor {
   /// session (see [dismissForSession]). Pass `ignoreDismissal: true` to
   /// force a start anyway (e.g. an instructor-forced proctored exam mode).
   Future<void> start({bool ignoreDismissal = false}) async {
+    print('start() entered — isRunning=${_service.isRunning}, dismissed=$_dismissedForSession');
     if (_service.isRunning) return;
     if (!ignoreDismissal && _dismissedForSession) return;
-    await _service.start();
+    if (_external) {
+      print("start called on external source");
+      await _service.startExternal();
+    } else {
+      print("start called on own source");
+      await _service.start();
+    }
     _subscription = _service.results.listen(_handleResult);
   }
 
@@ -156,6 +193,7 @@ class AttentivenessMonitor {
 
   void _handleResult(AttentivenessResult result) {
     status.value = result.status;
+    print("status.value = ${status.value}");
     onSample?.call(result);
 
     final now = result.timestamp;
