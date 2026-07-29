@@ -1,0 +1,214 @@
+// attentiveness_prompt_dialog.dart
+//
+// Generic "are you still with us?" dialog. Not tied to video — usable from
+// a live-class screen or an audio player too.
+//
+// This is a plain-Material implementation with no dependency on any host
+// app's design system, so it drops into any Flutter app unmodified. Pass
+// an [AttentivenessDialogTheme] to restyle it to match your app.
+
+import 'package:flutter/material.dart';
+
+/// What the learner did with the prompt.
+class AttentivenessPromptResult {
+  /// True if they tapped "I'm here". False/absent (dialog dismissed some
+  /// other way) should be treated the same as false by callers — pause
+  /// content, don't auto-resume — unless you want to allow silent dismissal.
+  final bool confirmed;
+
+  /// True if they checked "Don't show this again". This is scoped to the
+  /// current video/section only — pass it to
+  /// `AttentivenessMonitor.dismissForSession()`, which keeps it in memory
+  /// (nothing written to disk) and stops the camera/detector too. It resets
+  /// automatically the next time a new AttentivenessMonitor is created for
+  /// the next video.
+  final bool dontShowAgain;
+
+  const AttentivenessPromptResult({
+    required this.confirmed,
+    required this.dontShowAgain,
+  });
+}
+
+/// Visual customization for [AttentivenessPromptDialog]. Defaults fall back
+/// to the ambient [Theme] so the dialog looks reasonable out of the box.
+class AttentivenessDialogTheme {
+  final Color? primaryColor;
+  final Color? errorColor;
+  final Color? secondaryTextColor;
+  final BorderRadius borderRadius;
+  final TextStyle? titleStyle;
+  final TextStyle? messageStyle;
+
+  const AttentivenessDialogTheme({
+    this.primaryColor,
+    this.errorColor,
+    this.secondaryTextColor,
+    this.borderRadius = const BorderRadius.all(Radius.circular(12)),
+    this.titleStyle,
+    this.messageStyle,
+  });
+
+  static const AttentivenessDialogTheme defaultTheme =
+      AttentivenessDialogTheme();
+}
+
+/// Shows a blocking prompt asking the learner to confirm they're still
+/// paying attention (or, with [showMultiplePersonsWarning], that only they
+/// are in frame). Returns `null` if dismissed without response.
+Future<AttentivenessPromptResult?> showAttentivenessPrompt({
+  required BuildContext context,
+  String title = 'You Are Distracted!',
+  String message = 'You are not paying attention to the lesson.',
+  bool showDontShowAgainOption = false,
+  bool showMultiplePersonsWarning = false,
+  AttentivenessDialogTheme theme = AttentivenessDialogTheme.defaultTheme,
+}) {
+  return showGeneralDialog<AttentivenessPromptResult>(
+    context: context,
+    barrierDismissible: false,
+    barrierColor: Colors.black87,
+    transitionDuration: const Duration(milliseconds: 250),
+    transitionBuilder: (ctx, anim, _, child) =>
+        FadeTransition(opacity: anim, child: child),
+    pageBuilder: (ctx, _, __) => AttentivenessPromptDialog(
+      title: title,
+      message: message,
+      showDontShowAgainOption: showDontShowAgainOption,
+      showMultiplePersonsWarning: showMultiplePersonsWarning,
+      theme: theme,
+    ),
+  );
+}
+
+class AttentivenessPromptDialog extends StatefulWidget {
+  final String title;
+  final String message;
+  final bool showDontShowAgainOption;
+
+  /// Swaps the icon to a "group" icon — use this when the dialog is being
+  /// shown because `AttentivenessStatus.multiplePersonsDetected` fired,
+  /// rather than a plain distraction/away check.
+  final bool showMultiplePersonsWarning;
+
+  final AttentivenessDialogTheme theme;
+
+  const AttentivenessPromptDialog({
+    super.key,
+    required this.title,
+    required this.message,
+    required this.showDontShowAgainOption,
+    this.showMultiplePersonsWarning = false,
+    this.theme = AttentivenessDialogTheme.defaultTheme,
+  });
+
+  @override
+  State<AttentivenessPromptDialog> createState() =>
+      _AttentivenessPromptDialogState();
+}
+
+class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
+  bool _dontShowAgain = false;
+
+  void _toggleDontShowAgain(bool? value) {
+    setState(() => _dontShowAgain = value ?? false);
+  }
+
+  void _confirm() {
+    Navigator.pop(
+      context,
+      AttentivenessPromptResult(
+        confirmed: true,
+        dontShowAgain: _dontShowAgain,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final primary = widget.theme.primaryColor ?? scheme.primary;
+    final error = widget.theme.errorColor ?? scheme.error;
+    final secondaryText = widget.theme.secondaryTextColor ??
+        Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7) ??
+        Colors.black54;
+
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 32),
+      shape: RoundedRectangleBorder(borderRadius: widget.theme.borderRadius),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              widget.showMultiplePersonsWarning
+                  ? Icons.cancel_outlined
+                  : Icons.error_outline_outlined,
+              color: error,
+              size: 36,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              widget.title,
+              textAlign: TextAlign.center,
+              style: widget.theme.titleStyle ??
+                  const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              widget.message,
+              textAlign: TextAlign.center,
+              style: widget.theme.messageStyle ??
+                  TextStyle(fontSize: 12, color: secondaryText),
+            ),
+            if (widget.showDontShowAgainOption) ...[
+              const SizedBox(height: 16),
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => _toggleDontShowAgain(!_dontShowAgain),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Checkbox(
+                      value: _dontShowAgain,
+                      activeColor: primary,
+                      onChanged: _toggleDontShowAgain,
+                    ),
+                    Flexible(
+                      child: Text(
+                        "Don't show again for this video",
+                        style: TextStyle(fontSize: 12, color: secondaryText),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _confirm,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: primary,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                child: Text(
+                  widget.showDontShowAgainOption ? 'Ok' : 'Sorry',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
