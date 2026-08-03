@@ -30,7 +30,7 @@ class AttentivenessConfig {
   final Duration inattentiveGracePeriod;
 
   /// How long "no face in frame" must persist before `onFaceMissing` fires.
-  final Duration faceMissingGracePeriod;
+  //final Duration faceMissingGracePeriod;
 
   /// How long "more than one face in frame" must persist before
   /// `onMultiplePersonsDetected` fires.
@@ -54,7 +54,7 @@ class AttentivenessConfig {
     this.eyeOpenThreshold = 0.4,
     this.enableMultiplePersonDetection = true,
     this.inattentiveGracePeriod = const Duration(seconds: 4),
-    this.faceMissingGracePeriod = const Duration(seconds: 4),
+    //this.faceMissingGracePeriod = const Duration(seconds: 4),
     this.multiplePersonsGracePeriod = const Duration(seconds: 3),
     this.enableSoundAlert = true,
     this.alertSoundAsset,
@@ -69,7 +69,7 @@ class AttentivenessConfig {
     maxHeadPitchDegrees: 28,
     eyeOpenThreshold: 0.3,
     inattentiveGracePeriod: Duration(seconds: 6),
-    faceMissingGracePeriod: Duration(seconds: 6),
+    //faceMissingGracePeriod: Duration(seconds: 6),
     multiplePersonsGracePeriod: Duration(seconds: 5),
   );
 
@@ -81,8 +81,8 @@ class AttentivenessConfig {
     maxHeadPitchDegrees: 12,
     eyeOpenThreshold: 0.5,
     inattentiveGracePeriod: Duration(seconds: 30),
-    faceMissingGracePeriod: Duration(seconds: 30),
-    multiplePersonsGracePeriod: Duration(seconds: 30),
+    //faceMissingGracePeriod: Duration(seconds: 30),
+    multiplePersonsGracePeriod: Duration(seconds: 10),
   );
 
   AttentivenessConfig copyWith({
@@ -92,7 +92,7 @@ class AttentivenessConfig {
     double? eyeOpenThreshold,
     bool? enableMultiplePersonDetection,
     Duration? inattentiveGracePeriod,
-    Duration? faceMissingGracePeriod,
+    //Duration? faceMissingGracePeriod,
     Duration? multiplePersonsGracePeriod,
     bool? enableSoundAlert,
     String? alertSoundAsset,
@@ -106,8 +106,8 @@ class AttentivenessConfig {
           enableMultiplePersonDetection ?? this.enableMultiplePersonDetection,
       inattentiveGracePeriod:
           inattentiveGracePeriod ?? this.inattentiveGracePeriod,
-      faceMissingGracePeriod:
-          faceMissingGracePeriod ?? this.faceMissingGracePeriod,
+      //faceMissingGracePeriod:
+      //    faceMissingGracePeriod ?? this.faceMissingGracePeriod,
       multiplePersonsGracePeriod:
           multiplePersonsGracePeriod ?? this.multiplePersonsGracePeriod,
       enableSoundAlert: enableSoundAlert ?? this.enableSoundAlert,

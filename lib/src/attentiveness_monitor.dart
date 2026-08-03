@@ -219,24 +219,24 @@ class AttentivenessMonitor {
     }
 
     // --- face-missing tracking -------------------------------------------
-    if (result.status == AttentivenessStatus.faceNotDetected) {
-      _faceMissingSince ??= now;
-      if (!_faceMissingFired &&
-          now.difference(_faceMissingSince!) >= config.faceMissingGracePeriod) {
-        _faceMissingFired = true;
-        _playAlertSound();
-        onFaceMissing?.call(result);
-      }
-    } else {
-      if (_faceMissingFired) onFaceReturned?.call(result);
-      _faceMissingSince = null;
-      _faceMissingFired = false;
-    }
+    // if (result.status == AttentivenessStatus.faceNotDetected) {
+    //   _faceMissingSince ??= now;
+    //   if (!_faceMissingFired &&
+    //       now.difference(_faceMissingSince!) >= config.faceMissingGracePeriod) {
+    //     _faceMissingFired = true;
+    //     _playAlertSound();
+    //     onFaceMissing?.call(result);
+    //   }
+    // } else {
+    //   if (_faceMissingFired) onFaceReturned?.call(result);
+    //   _faceMissingSince = null;
+    //   _faceMissingFired = false;
+    // }
 
     // --- inattentive tracking (looking away / eyes closed) ----------------
     final isInattentiveNow = result.status == AttentivenessStatus.lookingLeft ||
         result.status == AttentivenessStatus.lookingRight ||
-        result.status == AttentivenessStatus.eyesClosed;
+        result.status == AttentivenessStatus.eyesClosed || result.status == AttentivenessStatus.faceNotDetected;
 
     if (isInattentiveNow) {
       _inattentiveSince ??= now;
