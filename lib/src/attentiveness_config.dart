@@ -3,10 +3,42 @@
 // Tunable thresholds for the attentiveness engine, plus two ready-made
 // presets (`relaxed` / `strict`). Pass a custom instance to
 // `AttentivenessMonitor(config: ...)` if the presets don't fit your case.
+//
+// HOW "INATTENTIVE" IS DECIDED (window + confirm-count):
+//
+// 1. Every [sampleInterval] (minimum 15 seconds — see below) one frame is
+//    processed and classified as raw-inattentive or raw-attentive.
+// 2. The last [inattentiveWindowSize] raw classifications are kept in a
+//    sliding window. Each time a new one arrives, the window is re-scored:
+//      - If the window is full (has [inattentiveWindowSize] entries), it
+//        scores "inattentive" on a MAJORITY (e.g. 2 out of 3).
+//      - If the window is still filling up (fewer entries so far, e.g. only
+//        2 because the monitor just started), it scores "inattentive" only
+//        if ALL of them are inattentive (e.g. 2 out of 2).
+//    This is what keeps a single blink or one bad frame from mattering.
+// 3. Each time the window scores "inattentive", a consecutive counter goes
+//    up by one; a window score of "attentive" resets it to zero. Once that
+//    counter reaches [inattentiveConfirmCount], `onBecameInattentive` fires
+//    (with the defaults below: 2 samples x 15s sampleInterval = 30 seconds
+//    of confirmed inattentiveness before the prompt is shown).
+// 4. If the learner is shown the prompt and chooses to ignore it instead of
+//    confirming, the monitor keeps counting in the background. Every
+//    additional [ignoreRepeatConfirmCount] consecutive inattentive samples
+//    (30s again, by default) it fires `onInattentiveWhileIgnoring` so you
+//    can let a teacher/dashboard know, without re-showing the dialog. If
+//    the learner becomes attentive again while ignoring,
+//    `onBecameAttentiveWhileIgnoring` fires once instead.
 
 class AttentivenessConfig {
+  /// Absolute floor for [sampleInterval]. Enforced by an assertion in the
+  /// constructor so frames can never be processed more often than this,
+  /// regardless of preset or custom config — keeps CPU/battery cost and
+  /// camera activity bounded.
+  static const Duration minSampleInterval = Duration(seconds: 15);
+
   /// Minimum time between processed frames. Controls both CPU/battery cost
-  /// and how "twitchy" detection feels. ~1.4 fps by default.
+  /// and how "twitchy" detection feels. Must be >= [minSampleInterval]
+  /// (15 seconds) — enforced at construction time.
   final Duration sampleInterval;
 
   /// Head yaw (left/right turn), in degrees, beyond which the learner is
@@ -25,20 +57,30 @@ class AttentivenessConfig {
   /// if you don't care about "someone else is watching over their shoulder".
   final bool enableMultiplePersonDetection;
 
-  /// How long a distracted state (looking away / eyes closed) must persist
-  /// before `onBecameInattentive` fires.
-  final Duration inattentiveGracePeriod;
+  /// How many of the most-recent raw per-frame classifications to keep in
+  /// the smoothing window (see the class doc above). Default 3.
+  final int inattentiveWindowSize;
 
-  /// How long "no face in frame" must persist before `onFaceMissing` fires.
-  //final Duration faceMissingGracePeriod;
+  /// How many consecutive windowed "inattentive" scores in a row are needed
+  /// before `onBecameInattentive` fires. With the defaults (2 x a 15s
+  /// [sampleInterval]) that's 30 seconds of confirmed inattentiveness.
+  final int inattentiveConfirmCount;
+
+  /// While the learner is in the "ignoring" state (see
+  /// `AttentivenessMonitor.ignoreInattentiveness`), how many additional
+  /// consecutive windowed "inattentive" scores must pass before
+  /// `onInattentiveWhileIgnoring` fires again. Defaults to the same cadence
+  /// as [inattentiveConfirmCount] (30 seconds by default).
+  final int ignoreRepeatConfirmCount;
 
   /// How long "more than one face in frame" must persist before
-  /// `onMultiplePersonsDetected` fires.
+  /// `onMultiplePersonsDetected` fires. Independent of the window/confirm
+  /// logic above, since multiple-person detection isn't noisy the same way.
   final Duration multiplePersonsGracePeriod;
 
-  /// Whether to play a looping alert sound while an inattentive/missing/
-  /// multiple-persons state is active (stops automatically once resolved,
-  /// or when you call `monitor.stopAlertSound()`).
+  /// Whether to play a looping alert sound while an inattentive/multiple-
+  /// persons state is active (stops automatically once resolved, or when
+  /// you call `monitor.stopAlertSound()`).
   final bool enableSoundAlert;
 
   /// Asset path for the alert sound (e.g. `'assets/sounds/alert.mp3'`).
@@ -47,42 +89,54 @@ class AttentivenessConfig {
   /// packages don't bundle runtime assets for their dependents by default.
   final String? alertSoundAsset;
 
-  const AttentivenessConfig({
-    this.sampleInterval = const Duration(milliseconds: 700),
+  AttentivenessConfig({
+    this.sampleInterval = minSampleInterval,
     this.maxHeadYawDegrees = 25,
     this.maxHeadPitchDegrees = 20,
     this.eyeOpenThreshold = 0.4,
     this.enableMultiplePersonDetection = true,
-    this.inattentiveGracePeriod = const Duration(seconds: 4),
-    //this.faceMissingGracePeriod = const Duration(seconds: 4),
+    this.inattentiveWindowSize = 3,
+    this.inattentiveConfirmCount = 2,
+    this.ignoreRepeatConfirmCount = 2,
     this.multiplePersonsGracePeriod = const Duration(seconds: 3),
     this.enableSoundAlert = true,
     this.alertSoundAsset,
-  });
+  })  : assert(
+          sampleInterval >= minSampleInterval,
+          'sampleInterval must be at least ${minSampleInterval.inSeconds}s '
+          'so frames are not processed too continuously.',
+        ),
+        assert(inattentiveWindowSize >= 1, 'inattentiveWindowSize must be >= 1'),
+        assert(inattentiveConfirmCount >= 1, 'inattentiveConfirmCount must be >= 1'),
+        assert(ignoreRepeatConfirmCount >= 1, 'ignoreRepeatConfirmCount must be >= 1');
 
-  /// Looser thresholds and longer grace periods — good default for live
+  /// Looser thresholds and longer confirm windows — good default for live
   /// classes or anywhere false positives (bad lighting, propped-up phone,
-  /// glasses glare) would be disruptive.
-  static const AttentivenessConfig relaxed = AttentivenessConfig(
-    sampleInterval: Duration(milliseconds: 900),
+  /// glasses glare) would be disruptive. Frames every 20s; still needs 2
+  /// confirmed windowed-inattentive samples (~40s) before the prompt fires.
+  static final AttentivenessConfig relaxed = AttentivenessConfig(
+    sampleInterval: const Duration(seconds: 20),
     maxHeadYawDegrees: 35,
     maxHeadPitchDegrees: 28,
     eyeOpenThreshold: 0.3,
-    inattentiveGracePeriod: Duration(seconds: 6),
-    //faceMissingGracePeriod: Duration(seconds: 6),
-    multiplePersonsGracePeriod: Duration(seconds: 5),
+    inattentiveWindowSize: 3,
+    inattentiveConfirmCount: 2,
+    ignoreRepeatConfirmCount: 2,
+    multiplePersonsGracePeriod: const Duration(seconds: 5),
   );
 
-  /// Tighter thresholds and shorter grace periods — for contexts where you
-  /// want to catch distraction quickly (e.g. a proctored assessment).
-  static const AttentivenessConfig strict = AttentivenessConfig(
-    sampleInterval: Duration(seconds: 5),
+  /// Tighter thresholds — for contexts where you want to catch distraction
+  /// quickly (e.g. a proctored assessment). Uses the fastest allowed
+  /// sampling rate (15s) so 2 confirmed samples = 30s.
+  static final AttentivenessConfig strict = AttentivenessConfig(
+    sampleInterval: minSampleInterval,
     maxHeadYawDegrees: 15,
     maxHeadPitchDegrees: 12,
     eyeOpenThreshold: 0.5,
-    inattentiveGracePeriod: Duration(seconds: 30),
-    //faceMissingGracePeriod: Duration(seconds: 30),
-    multiplePersonsGracePeriod: Duration(seconds: 10),
+    inattentiveWindowSize: 3,
+    inattentiveConfirmCount: 2,
+    ignoreRepeatConfirmCount: 2,
+    multiplePersonsGracePeriod: const Duration(seconds: 10),
   );
 
   AttentivenessConfig copyWith({
@@ -91,8 +145,9 @@ class AttentivenessConfig {
     double? maxHeadPitchDegrees,
     double? eyeOpenThreshold,
     bool? enableMultiplePersonDetection,
-    Duration? inattentiveGracePeriod,
-    //Duration? faceMissingGracePeriod,
+    int? inattentiveWindowSize,
+    int? inattentiveConfirmCount,
+    int? ignoreRepeatConfirmCount,
     Duration? multiplePersonsGracePeriod,
     bool? enableSoundAlert,
     String? alertSoundAsset,
@@ -104,10 +159,11 @@ class AttentivenessConfig {
       eyeOpenThreshold: eyeOpenThreshold ?? this.eyeOpenThreshold,
       enableMultiplePersonDetection:
           enableMultiplePersonDetection ?? this.enableMultiplePersonDetection,
-      inattentiveGracePeriod:
-          inattentiveGracePeriod ?? this.inattentiveGracePeriod,
-      //faceMissingGracePeriod:
-      //    faceMissingGracePeriod ?? this.faceMissingGracePeriod,
+      inattentiveWindowSize: inattentiveWindowSize ?? this.inattentiveWindowSize,
+      inattentiveConfirmCount:
+          inattentiveConfirmCount ?? this.inattentiveConfirmCount,
+      ignoreRepeatConfirmCount:
+          ignoreRepeatConfirmCount ?? this.ignoreRepeatConfirmCount,
       multiplePersonsGracePeriod:
           multiplePersonsGracePeriod ?? this.multiplePersonsGracePeriod,
       enableSoundAlert: enableSoundAlert ?? this.enableSoundAlert,

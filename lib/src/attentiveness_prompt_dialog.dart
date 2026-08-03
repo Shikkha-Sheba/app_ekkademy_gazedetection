@@ -14,7 +14,16 @@ class AttentivenessPromptResult {
   /// True if they tapped "I'm here". False/absent (dialog dismissed some
   /// other way) should be treated the same as false by callers — pause
   /// content, don't auto-resume — unless you want to allow silent dismissal.
+  /// When true, pass this to `AttentivenessMonitor.markAttentive()`.
   final bool confirmed;
+
+  /// True if they tapped "Ignore" instead of confirming. Monitoring keeps
+  /// running in the background — pass this to
+  /// `AttentivenessMonitor.ignoreInattentiveness()`, which suppresses this
+  /// dialog from firing again for the same inattentive stretch but keeps
+  /// notifying via `onInattentiveWhileIgnoring` /
+  /// `onBecameAttentiveWhileIgnoring`. Mutually exclusive with [confirmed].
+  final bool ignored;
 
   /// True if they checked "Don't show this again". This is scoped to the
   /// current video/section only — pass it to
@@ -26,6 +35,7 @@ class AttentivenessPromptResult {
 
   const AttentivenessPromptResult({
     required this.confirmed,
+    this.ignored = false,
     required this.dontShowAgain,
   });
 }
@@ -62,6 +72,7 @@ Future<AttentivenessPromptResult?> showAttentivenessPrompt({
   String message = 'You are not paying attention to the lesson.',
   bool showDontShowAgainOption = false,
   bool showMultiplePersonsWarning = false,
+  bool showIgnoreOption = true,
   AttentivenessDialogTheme theme = AttentivenessDialogTheme.defaultTheme,
 }) {
   return showGeneralDialog<AttentivenessPromptResult>(
@@ -76,6 +87,7 @@ Future<AttentivenessPromptResult?> showAttentivenessPrompt({
       message: message,
       showDontShowAgainOption: showDontShowAgainOption,
       showMultiplePersonsWarning: showMultiplePersonsWarning,
+      showIgnoreOption: showIgnoreOption,
       theme: theme,
     ),
   );
@@ -91,6 +103,13 @@ class AttentivenessPromptDialog extends StatefulWidget {
   /// rather than a plain distraction/away check.
   final bool showMultiplePersonsWarning;
 
+  /// Shows a secondary "Ignore" text button below the main confirm button.
+  /// Tapping it returns an [AttentivenessPromptResult] with `ignored: true`
+  /// — pass that to `AttentivenessMonitor.ignoreInattentiveness()`. Default
+  /// true; set false if you only want the "I'm here"/"don't show again"
+  /// flow.
+  final bool showIgnoreOption;
+
   final AttentivenessDialogTheme theme;
 
   const AttentivenessPromptDialog({
@@ -99,6 +118,7 @@ class AttentivenessPromptDialog extends StatefulWidget {
     required this.message,
     required this.showDontShowAgainOption,
     this.showMultiplePersonsWarning = false,
+    this.showIgnoreOption = true,
     this.theme = AttentivenessDialogTheme.defaultTheme,
   });
 
@@ -119,6 +139,17 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
       context,
       AttentivenessPromptResult(
         confirmed: true,
+        dontShowAgain: _dontShowAgain,
+      ),
+    );
+  }
+
+  void _ignore() {
+    Navigator.pop(
+      context,
+      AttentivenessPromptResult(
+        confirmed: false,
+        ignored: true,
         dontShowAgain: _dontShowAgain,
       ),
     );
@@ -206,6 +237,23 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
                 ),
               ),
             ),
+            if (widget.showIgnoreOption) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: _ignore,
+                  child: Text(
+                    'Ignore',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: secondaryText,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

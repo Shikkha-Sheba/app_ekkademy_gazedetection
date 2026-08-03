@@ -48,14 +48,16 @@ class AttentivenessService {
 
   bool get isRunning => _ownsCamera ? _cameraController != null : _externalRunning;
 
-  AttentivenessService({this.config = const AttentivenessConfig()})
-      : _ownsCamera = true;
+  AttentivenessService({AttentivenessConfig? config})
+      : config = config ?? AttentivenessConfig(),
+        _ownsCamera = true;
 
   /// Use when the camera is already owned by someone else (e.g. LiveKit's
   /// native camera capturer). No CameraController is created here — feed
   /// frames yourself via [pushFrame].
-  AttentivenessService.externalSource({this.config = const AttentivenessConfig()})
-      : _ownsCamera = false;
+  AttentivenessService.externalSource({AttentivenessConfig? config})
+      : config = config ?? AttentivenessConfig(),
+        _ownsCamera = false;
 
   /// Starts the face detector for external-frame mode. Does not touch the
   /// camera at all — call [pushFrame] to feed it frames.
