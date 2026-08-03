@@ -69,13 +69,13 @@ class AttentivenessService {
     _logTimer?.cancel();
     _logTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       _elapsedSeconds++;
-      debugPrint(
+      print(
         '\n===================================================================',
       );
-      debugPrint(
+      print(
         '\n================⏱️ Running: ${_elapsedSeconds}s===================',
       );
-      debugPrint(
+      print(
         '\n===================================================================',
       );
     });
@@ -110,7 +110,7 @@ class AttentivenessService {
       final stopwatch = Stopwatch()..start();
       final faces = await _faceDetector!.processImage(inputImage);
       stopwatch.stop();
-      debugPrint(
+      print(
         '📷 Image processed | Running: ${_elapsedSeconds}s | '
         'Faces: ${faces.length} | Processing: ${stopwatch.elapsedMilliseconds} ms',
       );
@@ -311,7 +311,7 @@ class AttentivenessService {
         await _cameraController?.stopImageStream();
       }
     } on Exception catch (e, st) {
-      debugPrint('AttentivenessService.stop error: $e\n$st');
+      print('AttentivenessService.stop error: $e\n$st');
     }
     await _cameraController?.dispose();
     await _faceDetector?.close();
