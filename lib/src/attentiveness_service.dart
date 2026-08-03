@@ -18,6 +18,7 @@ import 'dart:ui';
 
 import 'package:camera/camera.dart';
 
+
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -39,6 +40,23 @@ class AttentivenessService {
   bool _isProcessing = false;
   DateTime _lastEmit = DateTime.fromMillisecondsSinceEpoch(0);
   bool _externalRunning = false;
+
+  /// True while the most recently processed frame showed more than one
+  /// face. While true, [_onFrame] throttles using
+  /// [AttentivenessConfig.multiplePersonsCheckInterval] instead of
+  /// [AttentivenessConfig.sampleInterval], so a second face gets confirmed
+  /// by several quick frames instead of waiting a full normal-cadence
+  /// interval between each one. Reverts the moment a frame no longer shows
+  /// multiple faces. Only meaningful for the camera-owning ([start]) path —
+  /// [pushFrame] callers control their own cadence, but can still read this
+  /// via [isMultiplePersonFastMode] if they want to mirror the behaviour.
+  bool _multiplePersonFastMode = false;
+
+  /// Whether the service is currently in the faster multiple-persons
+  /// check cadence (see [_multiplePersonFastMode]). Exposed for
+  /// [pushFrame]-based external capture code that wants to speed up its own
+  /// capture cadence while a second face is being confirmed.
+  bool get isMultiplePersonFastMode => _multiplePersonFastMode;
 
   final StreamController<AttentivenessResult> _controller =
       StreamController<AttentivenessResult>.broadcast();
@@ -166,7 +184,10 @@ class AttentivenessService {
 
   void _onFrame(CameraImage image) {
     final now = DateTime.now();
-    if (_isProcessing || now.difference(_lastEmit) < config.sampleInterval) {
+    final throttle = _multiplePersonFastMode
+        ? config.multiplePersonsCheckInterval
+        : config.sampleInterval;
+    if (_isProcessing || now.difference(_lastEmit) < throttle) {
       return;
     }
     _isProcessing = true;
@@ -180,8 +201,11 @@ class AttentivenessService {
       if (inputImage == null) return;
 
       final faces = await _faceDetector!.processImage(inputImage);
+      final result = _interpret(faces);
+      _multiplePersonFastMode = config.enableMultiplePersonDetection &&
+          result.status == AttentivenessStatus.multiplePersonsDetected;
       if (_controller.isClosed) return;
-      _controller.add(_interpret(faces));
+      _controller.add(result);
     } on Exception catch (e) {
       throw StateError('AttentivenessService._process error: $e');
     }
@@ -218,6 +242,7 @@ class AttentivenessService {
     // checks below (looking away / eyes closed don't matter if there are
     // two people in frame either way).
     if (config.enableMultiplePersonDetection && faces.length > 1) {
+      print("Multiple person detacted in service");
       return AttentivenessResult(
         status: AttentivenessStatus.multiplePersonsDetected,
         headEulerY: yaw,
@@ -295,6 +320,7 @@ class AttentivenessService {
   Future<void> stop() async {
     _logTimer?.cancel();
     _logTimer = null;
+    _multiplePersonFastMode = false;
     if (!_ownsCamera) {
       await _faceDetector?.close();
       _faceDetector = null;

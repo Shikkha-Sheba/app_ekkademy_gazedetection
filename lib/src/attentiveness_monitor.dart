@@ -10,10 +10,20 @@
 //
 // HOW INATTENTIVENESS IS DECIDED — see the doc comment at the top of
 // attentiveness_config.dart for the full window/confirm-count explanation.
-// In short, with the default config: frames are sampled every 15s, smoothed
+// In short, with the default config: frames are sampled every 10s, smoothed
 // over a 3-frame window (majority, or unanimous while the window is still
-// filling), and 2 confirmed windowed-inattentive samples in a row (~30s)
+// filling), and 3 confirmed windowed-inattentive samples in a row (~30s)
 // trigger `onBecameInattentive`.
+//
+// HOW MULTIPLE-PERSONS IS DECIDED — also see attentiveness_config.dart.
+// In short: the instant a second face shows up, AttentivenessService itself
+// switches to a much faster internal sampling cadence
+// (`multiplePersonsCheckInterval`, 5s by default) so the presence can be
+// confirmed by several quick frames instead of one. `onMultiplePersonsDetected`
+// fires once that second face has stayed in frame continuously for
+// `multiplePersonsGracePeriod` (15s by default) — this class doesn't need to
+// know about the faster cadence, it just keeps applying the same
+// time-since-first-seen check to whatever frames arrive.
 //
 // THE PROMPT / IGNORE / FORCE-ATTENTIVE FLOW:
 //
@@ -82,8 +92,9 @@ class AttentivenessMonitor {
 
   /// Live status you can listen to directly (e.g. in a ValueListenableBuilder
   /// to show a small "distracted" badge somewhere in the UI).
-  final ValueNotifier<AttentivenessStatus> status =
-  ValueNotifier(AttentivenessStatus.unknown);
+  final ValueNotifier<AttentivenessStatus> status = ValueNotifier(
+    AttentivenessStatus.unknown,
+  );
 
   /// True once [onBecameInattentive] has fired and the learner has chosen
   /// to ignore the prompt via [ignoreInattentiveness], instead of
@@ -95,7 +106,8 @@ class AttentivenessMonitor {
 
   /// Fires once when the learner has been continuously (confirmed, smoothed)
   /// distracted for [AttentivenessConfig.inattentiveConfirmCount] consecutive
-  /// samples — 30 seconds with the default config. This is your cue to show
+  /// samples — 30 seconds with the default config (3 samples x 10s
+  /// sampleInterval). This is your cue to show
   /// [showAttentivenessPrompt]. Will not fire again until the learner either
   /// returns to attentive (via a real frame) or is force-marked attentive
   /// via [markAttentive], and does not fire again at all while
@@ -121,8 +133,12 @@ class AttentivenessMonitor {
   AttentivenessCallback? onBecameAttentiveWhileIgnoring;
 
   /// Fires once when more than one face has been continuously visible for
-  /// [AttentivenessConfig.multiplePersonsGracePeriod] — someone else is with
-  /// the learner, or looking over their shoulder.
+  /// [AttentivenessConfig.multiplePersonsGracePeriod] (15s by default) —
+  /// someone else is with the learner, or looking over their shoulder.
+  /// Behind the scenes, [AttentivenessService] samples faster
+  /// ([AttentivenessConfig.multiplePersonsCheckInterval]) for the duration
+  /// of the burst, so this is confirmed by several frames within that 15s,
+  /// not just one.
   AttentivenessCallback? onMultiplePersonsDetected;
 
   /// Fires once the frame drops back to a single face (or none) after
@@ -147,11 +163,9 @@ class AttentivenessMonitor {
   final bool _external;
 
   AttentivenessMonitor({AttentivenessConfig? config})
-      : config = config ?? AttentivenessConfig(),
-        _external = false,
-        _service = AttentivenessService(
-          config: config ?? AttentivenessConfig(),
-        ) {
+    : config = config ?? AttentivenessConfig(),
+      _external = false,
+      _service = AttentivenessService(config: config ?? AttentivenessConfig()) {
     if (this.config.enableSoundAlert) {
       _audioPlayer = AudioPlayer();
     }
@@ -164,11 +178,11 @@ class AttentivenessMonitor {
   /// [AttentivenessConfig.sampleInterval] yourself, since external mode
   /// does not re-throttle).
   AttentivenessMonitor.externalSource({AttentivenessConfig? config})
-      : config = config ?? AttentivenessConfig(),
-        _external = true,
-        _service = AttentivenessService.externalSource(
-          config: config ?? AttentivenessConfig(),
-        ) {
+    : config = config ?? AttentivenessConfig(),
+      _external = true,
+      _service = AttentivenessService.externalSource(
+        config: config ?? AttentivenessConfig(),
+      ) {
     if (this.config.enableSoundAlert) {
       _audioPlayer = AudioPlayer();
     }
@@ -181,7 +195,9 @@ class AttentivenessMonitor {
   /// it just spins up the face detector in this mode, no camera involved.
   Future<void> pushFrame(InputImage inputImage) async {
     if (!_external) {
-      throw StateError('pushFrame is only for AttentivenessMonitor.externalSource().');
+      throw StateError(
+        'pushFrame is only for AttentivenessMonitor.externalSource().',
+      );
     }
     await _service.pushFrame(inputImage);
   }
@@ -271,6 +287,8 @@ class AttentivenessMonitor {
         _multiplePersonsFired = true;
         _playAlertSound();
         onMultiplePersonsDetected?.call(result);
+        _multiplePersonsSince = null;
+        _multiplePersonsFired = false;
       }
       // Multiple people in frame makes the inattentive window logic below
       // moot for this frame, so stop here (matches previous behaviour).
@@ -284,9 +302,9 @@ class AttentivenessMonitor {
     // --- inattentive tracking: sliding window + confirm-count -------------
     final isRawInattentive =
         result.status == AttentivenessStatus.lookingLeft ||
-            result.status == AttentivenessStatus.lookingRight ||
-            result.status == AttentivenessStatus.eyesClosed ||
-            result.status == AttentivenessStatus.faceNotDetected;
+        result.status == AttentivenessStatus.lookingRight ||
+        result.status == AttentivenessStatus.eyesClosed ||
+        result.status == AttentivenessStatus.faceNotDetected;
 
     _recentInattentiveFlags.add(isRawInattentive);
     if (_recentInattentiveFlags.length > config.inattentiveWindowSize) {
@@ -347,7 +365,9 @@ class AttentivenessMonitor {
   }
 
   Future<void> _ensureAudioLoaded() async {
-    if (_audioLoaded || _audioPlayer == null || config.alertSoundAsset == null) {
+    if (_audioLoaded ||
+        _audioPlayer == null ||
+        config.alertSoundAsset == null) {
       return;
     }
     await _audioPlayer!.setAsset(config.alertSoundAsset!);
