@@ -31,7 +31,7 @@ class _ExampleAppState extends State<ExampleApp> {
     if (context == null) return;
     final res = await showAttentivenessPrompt(context: context);
     await _monitor.stopAlertSound();
-    if (res?.ignore ?? false) {
+    if (res?.ignoreFuturePromptsForVideo ?? false) {
       await _monitor.dismissForSession();
     }
   }
