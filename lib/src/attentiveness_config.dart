@@ -82,7 +82,7 @@ class AttentivenessConfig {
     eyeOpenThreshold: 0.5,
     inattentiveGracePeriod: Duration(seconds: 30),
     faceMissingGracePeriod: Duration(seconds: 2),
-    multiplePersonsGracePeriod: Duration(seconds: 2),
+    multiplePersonsGracePeriod: Duration(seconds: 10),
   );
 
   AttentivenessConfig copyWith({
