@@ -41,27 +41,50 @@ class AttentivenessService {
   bool _externalRunning = false;
 
   final StreamController<AttentivenessResult> _controller =
-  StreamController<AttentivenessResult>.broadcast();
+      StreamController<AttentivenessResult>.broadcast();
 
   /// Stream of analysed results, throttled by [AttentivenessConfig.sampleInterval].
   Stream<AttentivenessResult> get results => _controller.stream;
 
-  bool get isRunning => _ownsCamera ? _cameraController != null : _externalRunning;
+  bool get isRunning =>
+      _ownsCamera ? _cameraController != null : _externalRunning;
 
   AttentivenessService({AttentivenessConfig? config})
-      : config = config ?? AttentivenessConfig(),
-        _ownsCamera = true;
+    : config = config ?? AttentivenessConfig(),
+      _ownsCamera = true;
 
   /// Use when the camera is already owned by someone else (e.g. LiveKit's
   /// native camera capturer). No CameraController is created here — feed
   /// frames yourself via [pushFrame].
   AttentivenessService.externalSource({AttentivenessConfig? config})
-      : config = config ?? AttentivenessConfig(),
-        _ownsCamera = false;
+    : config = config ?? AttentivenessConfig(),
+      _ownsCamera = false;
+
+  //Logger for debugging purposes
+  Timer? _logTimer;
+  int _elapsedSeconds = 0;
+
+  void _startLogging() {
+    _elapsedSeconds = 0;
+    _logTimer?.cancel();
+    _logTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _elapsedSeconds++;
+      debugPrint(
+        '\n===================================================================',
+      );
+      debugPrint(
+        '\n================⏱️ Running: ${_elapsedSeconds}s===================',
+      );
+      debugPrint(
+        '\n===================================================================',
+      );
+    });
+  }
 
   /// Starts the face detector for external-frame mode. Does not touch the
   /// camera at all — call [pushFrame] to feed it frames.
   Future<void> startExternal() async {
+    _startLogging();
     if (_ownsCamera) {
       throw StateError('Use start() for the camera-owning instance.');
     }
@@ -84,10 +107,16 @@ class AttentivenessService {
     if (!_externalRunning || _faceDetector == null || _isProcessing) return;
     _isProcessing = true;
     try {
+      final stopwatch = Stopwatch()..start();
       final faces = await _faceDetector!.processImage(inputImage);
+      stopwatch.stop();
+      debugPrint(
+        '📷 Image processed | Running: ${_elapsedSeconds}s | '
+        'Faces: ${faces.length} | Processing: ${stopwatch.elapsedMilliseconds} ms',
+      );
       if (!_controller.isClosed) _controller.add(_interpret(faces));
     } on Exception catch (e) {
-       throw StateError('AttentivenessService.pushFrame error: $e');
+      throw StateError('AttentivenessService.pushFrame error: $e');
     } finally {
       _isProcessing = false;
     }
@@ -97,8 +126,11 @@ class AttentivenessService {
   /// streaming analysed frames. Throws a [StateError] if permission is
   /// denied or no front camera is available.
   Future<void> start() async {
+    _startLogging();
     if (!_ownsCamera) {
-      throw StateError('This instance uses externalSource() — call startExternal() instead.');
+      throw StateError(
+        'This instance uses externalSource() — call startExternal() instead.',
+      );
     }
     if (isRunning) return;
 
@@ -112,7 +144,7 @@ class AttentivenessService {
       throw StateError('No cameras available on this device.');
     }
     final frontCamera = cameras.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.front,
+      (c) => c.lensDirection == CameraLensDirection.front,
       orElse: () => cameras.first,
     );
 
@@ -175,8 +207,9 @@ class AttentivenessService {
     // face count so the "primary" face's angles/eye data are available
     // even when multiple people are in frame.
     faces.sort(
-          (a, b) => (b.boundingBox.width * b.boundingBox.height)
-          .compareTo(a.boundingBox.width * a.boundingBox.height),
+      (a, b) => (b.boundingBox.width * b.boundingBox.height).compareTo(
+        a.boundingBox.width * a.boundingBox.height,
+      ),
     );
     final face = faces.first;
 
@@ -201,18 +234,21 @@ class AttentivenessService {
       );
     }
 
-    final lookingAway = yaw.abs() > config.maxHeadYawDegrees ||
+    final lookingAway =
+        yaw.abs() > config.maxHeadYawDegrees ||
         pitch.abs() > config.maxHeadPitchDegrees;
 
-    final eyesClosed = leftEye != null &&
+    final eyesClosed =
+        leftEye != null &&
         rightEye != null &&
         leftEye < config.eyeOpenThreshold &&
         rightEye < config.eyeOpenThreshold;
 
     AttentivenessStatus status;
     if (lookingAway) {
-      status =
-      yaw > 0 ? AttentivenessStatus.lookingLeft : AttentivenessStatus.lookingRight;
+      status = yaw > 0
+          ? AttentivenessStatus.lookingLeft
+          : AttentivenessStatus.lookingRight;
     } else if (eyesClosed) {
       status = AttentivenessStatus.eyesClosed;
     } else {
@@ -240,10 +276,11 @@ class AttentivenessService {
 
     final rotation =
         InputImageRotationValue.fromRawValue(camera.sensorOrientation) ??
-            InputImageRotation.rotation0deg;
+        InputImageRotation.rotation0deg;
 
-    final format =
-    Platform.isAndroid ? InputImageFormat.nv21 : InputImageFormat.bgra8888;
+    final format = Platform.isAndroid
+        ? InputImageFormat.nv21
+        : InputImageFormat.bgra8888;
 
     // Both formats supported here are delivered as a single contiguous
     // plane by the `camera` plugin when imageFormatGroup is set above.
@@ -261,6 +298,8 @@ class AttentivenessService {
   }
 
   Future<void> stop() async {
+    _logTimer?.cancel();
+    _logTimer = null;
     if (!_ownsCamera) {
       await _faceDetector?.close();
       _faceDetector = null;
