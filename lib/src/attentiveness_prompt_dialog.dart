@@ -23,20 +23,11 @@ class AttentivenessPromptResult {
   /// dialog from firing again for the same inattentive stretch but keeps
   /// notifying via `onInattentiveWhileIgnoring` /
   /// `onBecameAttentiveWhileIgnoring`. Mutually exclusive with [confirmed].
-  final bool ignored;
-
-  /// True if they checked "Don't show this again". This is scoped to the
-  /// current video/section only — pass it to
-  /// `AttentivenessMonitor.dismissForSession()`, which keeps it in memory
-  /// (nothing written to disk) and stops the camera/detector too. It resets
-  /// automatically the next time a new AttentivenessMonitor is created for
-  /// the next video.
-  final bool dontShowAgain;
+  final bool ignoreFuturePromptsForVideo;
 
   const AttentivenessPromptResult({
     required this.confirmed,
-    this.ignored = false,
-    required this.dontShowAgain,
+    required this.ignoreFuturePromptsForVideo,
   });
 }
 
@@ -87,7 +78,7 @@ Future<AttentivenessPromptResult?> showAttentivenessPrompt({
       message: message,
       showDontShowAgainOption: showDontShowAgainOption,
       showMultiplePersonsWarning: showMultiplePersonsWarning,
-      showIgnoreOption: showIgnoreOption,
+
       theme: theme,
     ),
   );
@@ -103,13 +94,6 @@ class AttentivenessPromptDialog extends StatefulWidget {
   /// rather than a plain distraction/away check.
   final bool showMultiplePersonsWarning;
 
-  /// Shows a secondary "Ignore" text button below the main confirm button.
-  /// Tapping it returns an [AttentivenessPromptResult] with `ignored: true`
-  /// — pass that to `AttentivenessMonitor.ignoreInattentiveness()`. Default
-  /// true; set false if you only want the "I'm here"/"don't show again"
-  /// flow.
-  final bool showIgnoreOption;
-
   final AttentivenessDialogTheme theme;
 
   const AttentivenessPromptDialog({
@@ -118,7 +102,7 @@ class AttentivenessPromptDialog extends StatefulWidget {
     required this.message,
     required this.showDontShowAgainOption,
     this.showMultiplePersonsWarning = false,
-    this.showIgnoreOption = true,
+
     this.theme = AttentivenessDialogTheme.defaultTheme,
   });
 
@@ -138,19 +122,8 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
     Navigator.pop(
       context,
       AttentivenessPromptResult(
-        confirmed: true,
-        dontShowAgain: _dontShowAgain,
-      ),
-    );
-  }
-
-  void _ignore() {
-    Navigator.pop(
-      context,
-      AttentivenessPromptResult(
-        confirmed: false,
-        ignored: true,
-        dontShowAgain: _dontShowAgain,
+        confirmed: !_dontShowAgain,
+        ignoreFuturePromptsForVideo: _dontShowAgain,
       ),
     );
   }
@@ -160,7 +133,8 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
     final scheme = Theme.of(context).colorScheme;
     final primary = widget.theme.primaryColor ?? scheme.primary;
     final error = widget.theme.errorColor ?? scheme.error;
-    final secondaryText = widget.theme.secondaryTextColor ??
+    final secondaryText =
+        widget.theme.secondaryTextColor ??
         Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7) ??
         Colors.black54;
 
@@ -183,14 +157,16 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
             Text(
               widget.title,
               textAlign: TextAlign.center,
-              style: widget.theme.titleStyle ??
+              style:
+                  widget.theme.titleStyle ??
                   const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             Text(
               widget.message,
               textAlign: TextAlign.center,
-              style: widget.theme.messageStyle ??
+              style:
+                  widget.theme.messageStyle ??
                   TextStyle(fontSize: 12, color: secondaryText),
             ),
             if (widget.showDontShowAgainOption) ...[
@@ -237,23 +213,6 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
                 ),
               ),
             ),
-            if (widget.showIgnoreOption) ...[
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: TextButton(
-                  onPressed: _ignore,
-                  child: Text(
-                    'Ignore',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: secondaryText,
-                    ),
-                  ),
-                ),
-              ),
-            ],
           ],
         ),
       ),

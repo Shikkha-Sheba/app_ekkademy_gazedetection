@@ -17,7 +17,7 @@ import 'dart:io';
 import 'dart:ui';
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart';
+
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -69,14 +69,9 @@ class AttentivenessService {
     _logTimer?.cancel();
     _logTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       _elapsedSeconds++;
+
       print(
-        '\n===================================================================',
-      );
-      print(
-        '\n================⏱️ Running: ${_elapsedSeconds}s===================',
-      );
-      print(
-        '\n===================================================================',
+        '\n================>>>>>>>>>>⏱️ Running: ${_elapsedSeconds}s',
       );
     });
   }
@@ -89,7 +84,7 @@ class AttentivenessService {
       throw StateError('Use start() for the camera-owning instance.');
     }
     if (_externalRunning) return;
-    print("startExternal service called");
+    print("\n================>>>>>>>>>>startExternal service called");
     _faceDetector = FaceDetector(
       options: FaceDetectorOptions(
         enableClassification: true,
@@ -111,7 +106,7 @@ class AttentivenessService {
       final faces = await _faceDetector!.processImage(inputImage);
       stopwatch.stop();
       print(
-        '📷 Image processed | Running: ${_elapsedSeconds}s | '
+        '\n================>>>>>>>>>>📷 Image processed | Running: ${_elapsedSeconds}s | '
         'Faces: ${faces.length} | Processing: ${stopwatch.elapsedMilliseconds} ms',
       );
       if (!_controller.isClosed) _controller.add(_interpret(faces));
@@ -311,7 +306,7 @@ class AttentivenessService {
         await _cameraController?.stopImageStream();
       }
     } on Exception catch (e, st) {
-      print('AttentivenessService.stop error: $e\n$st');
+      print('\n================>>>>>>>>>>AttentivenessService.stop error: $e\n$st');
     }
     await _cameraController?.dispose();
     await _faceDetector?.close();

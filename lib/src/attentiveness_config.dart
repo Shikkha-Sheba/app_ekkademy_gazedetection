@@ -136,7 +136,7 @@ class AttentivenessConfig {
     inattentiveWindowSize: 3,
     inattentiveConfirmCount: 2,
     ignoreRepeatConfirmCount: 2,
-    multiplePersonsGracePeriod: const Duration(seconds: 10),
+    multiplePersonsGracePeriod: const Duration(seconds: 2),
   );
 
   AttentivenessConfig copyWith({
