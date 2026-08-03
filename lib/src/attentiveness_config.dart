@@ -76,11 +76,11 @@ class AttentivenessConfig {
   /// Tighter thresholds and shorter grace periods — for contexts where you
   /// want to catch distraction quickly (e.g. a proctored assessment).
   static const AttentivenessConfig strict = AttentivenessConfig(
-    sampleInterval: Duration(milliseconds: 500),
+    sampleInterval: Duration(seconds: 5),
     maxHeadYawDegrees: 15,
     maxHeadPitchDegrees: 12,
     eyeOpenThreshold: 0.5,
-    inattentiveGracePeriod: Duration(seconds: 2),
+    inattentiveGracePeriod: Duration(seconds: 30),
     faceMissingGracePeriod: Duration(seconds: 2),
     multiplePersonsGracePeriod: Duration(seconds: 2),
   );
