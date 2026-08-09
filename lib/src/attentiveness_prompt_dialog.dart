@@ -14,19 +14,20 @@ class AttentivenessPromptResult {
   /// True if they tapped "I'm here". False/absent (dialog dismissed some
   /// other way) should be treated the same as false by callers — pause
   /// content, don't auto-resume — unless you want to allow silent dismissal.
+  /// When true, pass this to `AttentivenessMonitor.markAttentive()`.
   final bool confirmed;
 
-  /// True if they checked "Don't show this again". This is scoped to the
-  /// current video/section only — pass it to
-  /// `AttentivenessMonitor.dismissForSession()`, which keeps it in memory
-  /// (nothing written to disk) and stops the camera/detector too. It resets
-  /// automatically the next time a new AttentivenessMonitor is created for
-  /// the next video.
-  final bool dontShowAgain;
+  /// True if they tapped "Ignore" instead of confirming. Monitoring keeps
+  /// running in the background — pass this to
+  /// `AttentivenessMonitor.ignoreInattentiveness()`, which suppresses this
+  /// dialog from firing again for the same inattentive stretch but keeps
+  /// notifying via `onInattentiveWhileIgnoring` /
+  /// `onBecameAttentiveWhileIgnoring`. Mutually exclusive with [confirmed].
+  final bool ignoreFuturePromptsForVideo;
 
   const AttentivenessPromptResult({
     required this.confirmed,
-    required this.dontShowAgain,
+    required this.ignoreFuturePromptsForVideo,
   });
 }
 
@@ -62,6 +63,7 @@ Future<AttentivenessPromptResult?> showAttentivenessPrompt({
   String message = 'You are not paying attention to the lesson.',
   bool showDontShowAgainOption = false,
   bool showMultiplePersonsWarning = false,
+  bool showIgnoreOption = true,
   AttentivenessDialogTheme theme = AttentivenessDialogTheme.defaultTheme,
 }) {
   return showGeneralDialog<AttentivenessPromptResult>(
@@ -76,6 +78,7 @@ Future<AttentivenessPromptResult?> showAttentivenessPrompt({
       message: message,
       showDontShowAgainOption: showDontShowAgainOption,
       showMultiplePersonsWarning: showMultiplePersonsWarning,
+
       theme: theme,
     ),
   );
@@ -99,6 +102,7 @@ class AttentivenessPromptDialog extends StatefulWidget {
     required this.message,
     required this.showDontShowAgainOption,
     this.showMultiplePersonsWarning = false,
+
     this.theme = AttentivenessDialogTheme.defaultTheme,
   });
 
@@ -118,8 +122,8 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
     Navigator.pop(
       context,
       AttentivenessPromptResult(
-        confirmed: true,
-        dontShowAgain: _dontShowAgain,
+        confirmed: !_dontShowAgain,
+        ignoreFuturePromptsForVideo: _dontShowAgain,
       ),
     );
   }
@@ -129,7 +133,8 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
     final scheme = Theme.of(context).colorScheme;
     final primary = widget.theme.primaryColor ?? scheme.primary;
     final error = widget.theme.errorColor ?? scheme.error;
-    final secondaryText = widget.theme.secondaryTextColor ??
+    final secondaryText =
+        widget.theme.secondaryTextColor ??
         Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7) ??
         Colors.black54;
 
@@ -152,14 +157,16 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
             Text(
               widget.title,
               textAlign: TextAlign.center,
-              style: widget.theme.titleStyle ??
+              style:
+                  widget.theme.titleStyle ??
                   const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             Text(
               widget.message,
               textAlign: TextAlign.center,
-              style: widget.theme.messageStyle ??
+              style:
+                  widget.theme.messageStyle ??
                   TextStyle(fontSize: 12, color: secondaryText),
             ),
             if (widget.showDontShowAgainOption) ...[

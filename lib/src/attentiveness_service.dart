@@ -17,7 +17,8 @@ import 'dart:io';
 import 'dart:ui';
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart';
+
+
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -40,31 +41,68 @@ class AttentivenessService {
   DateTime _lastEmit = DateTime.fromMillisecondsSinceEpoch(0);
   bool _externalRunning = false;
 
+  /// True while the most recently processed frame showed more than one
+  /// face. While true, [_onFrame] throttles using
+  /// [AttentivenessConfig.multiplePersonsCheckInterval] instead of
+  /// [AttentivenessConfig.sampleInterval], so a second face gets confirmed
+  /// by several quick frames instead of waiting a full normal-cadence
+  /// interval between each one. Reverts the moment a frame no longer shows
+  /// multiple faces. Only meaningful for the camera-owning ([start]) path —
+  /// [pushFrame] callers control their own cadence, but can still read this
+  /// via [isMultiplePersonFastMode] if they want to mirror the behaviour.
+  bool _multiplePersonFastMode = false;
+
+  /// Whether the service is currently in the faster multiple-persons
+  /// check cadence (see [_multiplePersonFastMode]). Exposed for
+  /// [pushFrame]-based external capture code that wants to speed up its own
+  /// capture cadence while a second face is being confirmed.
+  bool get isMultiplePersonFastMode => _multiplePersonFastMode;
+
   final StreamController<AttentivenessResult> _controller =
-  StreamController<AttentivenessResult>.broadcast();
+      StreamController<AttentivenessResult>.broadcast();
 
   /// Stream of analysed results, throttled by [AttentivenessConfig.sampleInterval].
   Stream<AttentivenessResult> get results => _controller.stream;
 
-  bool get isRunning => _ownsCamera ? _cameraController != null : _externalRunning;
+  bool get isRunning =>
+      _ownsCamera ? _cameraController != null : _externalRunning;
 
-  AttentivenessService({this.config = const AttentivenessConfig()})
-      : _ownsCamera = true;
+  AttentivenessService({AttentivenessConfig? config})
+    : config = config ?? AttentivenessConfig(),
+      _ownsCamera = true;
 
   /// Use when the camera is already owned by someone else (e.g. LiveKit's
   /// native camera capturer). No CameraController is created here — feed
   /// frames yourself via [pushFrame].
-  AttentivenessService.externalSource({this.config = const AttentivenessConfig()})
-      : _ownsCamera = false;
+  AttentivenessService.externalSource({AttentivenessConfig? config})
+    : config = config ?? AttentivenessConfig(),
+      _ownsCamera = false;
+
+  //Logger for debugging purposes
+  Timer? _logTimer;
+  int _elapsedSeconds = 0;
+
+  void _startLogging() {
+    _elapsedSeconds = 0;
+    _logTimer?.cancel();
+    _logTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _elapsedSeconds++;
+
+      print(
+        '\n================>>>>>>>>>>⏱️ Running: ${_elapsedSeconds}s',
+      );
+    });
+  }
 
   /// Starts the face detector for external-frame mode. Does not touch the
   /// camera at all — call [pushFrame] to feed it frames.
   Future<void> startExternal() async {
+    _startLogging();
     if (_ownsCamera) {
       throw StateError('Use start() for the camera-owning instance.');
     }
     if (_externalRunning) return;
-    print("startExternal service called");
+    print("\n================>>>>>>>>>>startExternal service called");
     _faceDetector = FaceDetector(
       options: FaceDetectorOptions(
         enableClassification: true,
@@ -82,10 +120,16 @@ class AttentivenessService {
     if (!_externalRunning || _faceDetector == null || _isProcessing) return;
     _isProcessing = true;
     try {
+      final stopwatch = Stopwatch()..start();
       final faces = await _faceDetector!.processImage(inputImage);
+      stopwatch.stop();
+      print(
+        '\n================>>>>>>>>>>📷 Image processed | Running: ${_elapsedSeconds}s | '
+        'Faces: ${faces.length} | Processing: ${stopwatch.elapsedMilliseconds} ms',
+      );
       if (!_controller.isClosed) _controller.add(_interpret(faces));
     } on Exception catch (e) {
-       throw StateError('AttentivenessService.pushFrame error: $e');
+      throw StateError('AttentivenessService.pushFrame error: $e');
     } finally {
       _isProcessing = false;
     }
@@ -95,8 +139,11 @@ class AttentivenessService {
   /// streaming analysed frames. Throws a [StateError] if permission is
   /// denied or no front camera is available.
   Future<void> start() async {
+    _startLogging();
     if (!_ownsCamera) {
-      throw StateError('This instance uses externalSource() — call startExternal() instead.');
+      throw StateError(
+        'This instance uses externalSource() — call startExternal() instead.',
+      );
     }
     if (isRunning) return;
 
@@ -110,7 +157,7 @@ class AttentivenessService {
       throw StateError('No cameras available on this device.');
     }
     final frontCamera = cameras.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.front,
+      (c) => c.lensDirection == CameraLensDirection.front,
       orElse: () => cameras.first,
     );
 
@@ -137,7 +184,10 @@ class AttentivenessService {
 
   void _onFrame(CameraImage image) {
     final now = DateTime.now();
-    if (_isProcessing || now.difference(_lastEmit) < config.sampleInterval) {
+    final throttle = _multiplePersonFastMode
+        ? config.multiplePersonsCheckInterval
+        : config.sampleInterval;
+    if (_isProcessing || now.difference(_lastEmit) < throttle) {
       return;
     }
     _isProcessing = true;
@@ -151,8 +201,11 @@ class AttentivenessService {
       if (inputImage == null) return;
 
       final faces = await _faceDetector!.processImage(inputImage);
+      final result = _interpret(faces);
+      _multiplePersonFastMode = config.enableMultiplePersonDetection &&
+          result.status == AttentivenessStatus.multiplePersonsDetected;
       if (_controller.isClosed) return;
-      _controller.add(_interpret(faces));
+      _controller.add(result);
     } on Exception catch (e) {
       throw StateError('AttentivenessService._process error: $e');
     }
@@ -173,8 +226,9 @@ class AttentivenessService {
     // face count so the "primary" face's angles/eye data are available
     // even when multiple people are in frame.
     faces.sort(
-          (a, b) => (b.boundingBox.width * b.boundingBox.height)
-          .compareTo(a.boundingBox.width * a.boundingBox.height),
+      (a, b) => (b.boundingBox.width * b.boundingBox.height).compareTo(
+        a.boundingBox.width * a.boundingBox.height,
+      ),
     );
     final face = faces.first;
 
@@ -188,6 +242,7 @@ class AttentivenessService {
     // checks below (looking away / eyes closed don't matter if there are
     // two people in frame either way).
     if (config.enableMultiplePersonDetection && faces.length > 1) {
+      print("Multiple person detacted in service");
       return AttentivenessResult(
         status: AttentivenessStatus.multiplePersonsDetected,
         headEulerY: yaw,
@@ -199,18 +254,21 @@ class AttentivenessService {
       );
     }
 
-    final lookingAway = yaw.abs() > config.maxHeadYawDegrees ||
+    final lookingAway =
+        yaw.abs() > config.maxHeadYawDegrees ||
         pitch.abs() > config.maxHeadPitchDegrees;
 
-    final eyesClosed = leftEye != null &&
+    final eyesClosed =
+        leftEye != null &&
         rightEye != null &&
         leftEye < config.eyeOpenThreshold &&
         rightEye < config.eyeOpenThreshold;
 
     AttentivenessStatus status;
     if (lookingAway) {
-      status =
-      yaw > 0 ? AttentivenessStatus.lookingLeft : AttentivenessStatus.lookingRight;
+      status = yaw > 0
+          ? AttentivenessStatus.lookingLeft
+          : AttentivenessStatus.lookingRight;
     } else if (eyesClosed) {
       status = AttentivenessStatus.eyesClosed;
     } else {
@@ -238,10 +296,11 @@ class AttentivenessService {
 
     final rotation =
         InputImageRotationValue.fromRawValue(camera.sensorOrientation) ??
-            InputImageRotation.rotation0deg;
+        InputImageRotation.rotation0deg;
 
-    final format =
-    Platform.isAndroid ? InputImageFormat.nv21 : InputImageFormat.bgra8888;
+    final format = Platform.isAndroid
+        ? InputImageFormat.nv21
+        : InputImageFormat.bgra8888;
 
     // Both formats supported here are delivered as a single contiguous
     // plane by the `camera` plugin when imageFormatGroup is set above.
@@ -259,6 +318,9 @@ class AttentivenessService {
   }
 
   Future<void> stop() async {
+    _logTimer?.cancel();
+    _logTimer = null;
+    _multiplePersonFastMode = false;
     if (!_ownsCamera) {
       await _faceDetector?.close();
       _faceDetector = null;
@@ -270,7 +332,7 @@ class AttentivenessService {
         await _cameraController?.stopImageStream();
       }
     } on Exception catch (e, st) {
-      debugPrint('AttentivenessService.stop error: $e\n$st');
+      print('\n================>>>>>>>>>>AttentivenessService.stop error: $e\n$st');
     }
     await _cameraController?.dispose();
     await _faceDetector?.close();

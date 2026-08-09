@@ -2,30 +2,61 @@
 //
 // This is the class you actually use from a screen. It wraps
 // AttentivenessService and turns noisy per-frame results into clean,
-// debounced events so a single blink or quick glance doesn't fire an alert.
+// confirmed events so a single blink or quick glance doesn't fire an alert.
 //
 // Fully standalone — works from a video player, a live-class screen, an
 // audio-only screen, anywhere. Just create one, wire up the callbacks you
 // care about, and call start().
 //
-// "Don't show this again" is intentionally in-memory only, scoped to this
-// monitor instance — i.e. to the current video/live session, not saved to
-// disk. Create one AttentivenessMonitor per video/section (which you're
-// already doing, since it owns the camera) and the dismissal naturally
-// resets the next time the learner opens a new one.
+// HOW INATTENTIVENESS IS DECIDED — see the doc comment at the top of
+// attentiveness_config.dart for the full window/confirm-count explanation.
+// In short, with the default config: frames are sampled every 10s, smoothed
+// over a 3-frame window (majority, or unanimous while the window is still
+// filling), and 3 confirmed windowed-inattentive samples in a row (~30s)
+// trigger `onBecameInattentive`.
 //
-// Example:
+// HOW MULTIPLE-PERSONS IS DECIDED — also see attentiveness_config.dart.
+// In short: the instant a second face shows up, AttentivenessService itself
+// switches to a much faster internal sampling cadence
+// (`multiplePersonsCheckInterval`, 5s by default) so the presence can be
+// confirmed by several quick frames instead of one. `onMultiplePersonsDetected`
+// fires once that second face has stayed in frame continuously for
+// `multiplePersonsGracePeriod` (15s by default) — this class doesn't need to
+// know about the faster cadence, it just keeps applying the same
+// time-since-first-seen check to whatever frames arrive.
+//
+// THE PROMPT / IGNORE / FORCE-ATTENTIVE FLOW:
 //
 //   final monitor = AttentivenessMonitor(config: AttentivenessConfig.relaxed);
+//
 //   monitor.onBecameInattentive = (result) async {
 //     // buzzer is already playing (enableSoundAlert); show the prompt.
 //     final res = await showAttentivenessPrompt(context: context);
-//     await monitor.stopAlertSound();
+//     if (res?.confirmed ?? false) {
+//       // Learner tapped "I'm here" — force the state back to attentive.
+//       await monitor.markAttentive();
+//     } else if (res?.ignored ?? false) {
+//       // Learner tapped "Ignore" — stop bugging them with the dialog, but
+//       // keep tracking in the background so a teacher can still be
+//       // notified (see onInattentiveWhileIgnoring below).
+//       await monitor.ignoreInattentiveness();
+//     }
 //     if (res?.dontShowAgain ?? false) {
 //       await monitor.dismissForSession(); // stops tracking for this video
 //     }
 //   };
-//   monitor.onFaceMissing = (result) { /* learner walked away */ };
+//
+//   // While ignoring, fires every extra ~30s the learner stays inattentive,
+//   // so you can let a teacher/dashboard know without re-showing a dialog.
+//   monitor.onInattentiveWhileIgnoring = (result) {
+//     notifyTeacherStillDistracted(result);
+//   };
+//
+//   // While ignoring, fires once if the learner becomes attentive again.
+//   monitor.onBecameAttentiveWhileIgnoring = (result) {
+//     notifyTeacherBackToAttentive(result);
+//   };
+//
 //   monitor.onMultiplePersonsDetected = (result) {
 //     // someone else is in frame — pause playback, log analytics, etc.
 //   };
@@ -61,54 +92,80 @@ class AttentivenessMonitor {
 
   /// Live status you can listen to directly (e.g. in a ValueListenableBuilder
   /// to show a small "distracted" badge somewhere in the UI).
-  final ValueNotifier<AttentivenessStatus> status =
-  ValueNotifier(AttentivenessStatus.unknown);
+  final ValueNotifier<AttentivenessStatus> status = ValueNotifier(
+    AttentivenessStatus.unknown,
+  );
 
-  /// Fires once when the learner has been continuously distracted (looking
-  /// away or eyes closed) for [AttentivenessConfig.inattentiveGracePeriod].
-  /// Will not fire again until they return to attentive.
+  /// True once [onBecameInattentive] has fired and the learner has chosen
+  /// to ignore the prompt via [ignoreInattentiveness], instead of
+  /// confirming via [markAttentive]. While true, the dialog is not
+  /// re-triggered, but [onInattentiveWhileIgnoring] /
+  /// [onBecameAttentiveWhileIgnoring] keep firing in its place.
+  bool get isIgnoring => _isIgnoring;
+  bool _isIgnoring = false;
+
+  /// Fires once when the learner has been continuously (confirmed, smoothed)
+  /// distracted for [AttentivenessConfig.inattentiveConfirmCount] consecutive
+  /// samples — 30 seconds with the default config (3 samples x 10s
+  /// sampleInterval). This is your cue to show
+  /// [showAttentivenessPrompt]. Will not fire again until the learner either
+  /// returns to attentive (via a real frame) or is force-marked attentive
+  /// via [markAttentive], and does not fire again at all while
+  /// [isIgnoring] is true.
   AttentivenessCallback? onBecameInattentive;
 
   /// Fires once when the learner returns to "attentive" after having
-  /// triggered [onBecameInattentive].
+  /// triggered [onBecameInattentive] (and was not in the middle of
+  /// [ignoreInattentiveness] — see [onBecameAttentiveWhileIgnoring] for
+  /// that case).
   AttentivenessCallback? onBecameAttentive;
 
-  /// Fires once when the face has been missing for
-  /// [AttentivenessConfig.faceMissingGracePeriod] (they left, camera
-  /// covered, etc).
-  AttentivenessCallback? onFaceMissing;
+  /// While [isIgnoring] is true, fires every additional
+  /// [AttentivenessConfig.ignoreRepeatConfirmCount] consecutive confirmed
+  /// inattentive samples (30 seconds again, by default) — i.e. it keeps
+  /// firing roughly every 30s for as long as the learner stays inattentive
+  /// and ignoring, so you can let a teacher/dashboard know without
+  /// re-showing the dialog.
+  AttentivenessCallback? onInattentiveWhileIgnoring;
 
-  /// Fires once when the face reappears after [onFaceMissing] triggered.
-  AttentivenessCallback? onFaceReturned;
+  /// Fires once if the learner becomes attentive again while [isIgnoring]
+  /// was true. Also clears [isIgnoring].
+  AttentivenessCallback? onBecameAttentiveWhileIgnoring;
 
   /// Fires once when more than one face has been continuously visible for
-  /// [AttentivenessConfig.multiplePersonsGracePeriod] — someone else is with
-  /// the learner, or looking over their shoulder.
+  /// [AttentivenessConfig.multiplePersonsGracePeriod] (15s by default) —
+  /// someone else is with the learner, or looking over their shoulder.
+  /// Behind the scenes, [AttentivenessService] samples faster
+  /// ([AttentivenessConfig.multiplePersonsCheckInterval]) for the duration
+  /// of the burst, so this is confirmed by several frames within that 15s,
+  /// not just one.
   AttentivenessCallback? onMultiplePersonsDetected;
 
   /// Fires once the frame drops back to a single face (or none) after
   /// [onMultiplePersonsDetected] triggered.
   AttentivenessCallback? onMultiplePersonsCleared;
 
-  /// Optional: called on every single processed frame, useful for debug
-  /// logging or building your own analytics/heatmap of attention over time.
+  /// Optional: called on every single processed (raw, pre-smoothing) frame,
+  /// useful for debug logging or building your own analytics/heatmap of
+  /// attention over time.
   AttentivenessCallback? onSample;
 
-  DateTime? _inattentiveSince;
-  DateTime? _faceMissingSince;
+  // --- sliding-window / confirm-count state for inattentiveness ----------
+  final List<bool> _recentInattentiveFlags = [];
+  int _consecutiveInattentive = 0;
+  bool _promptFired = false;
+  int _lastIgnoreNotifyCount = 0;
+
+  // --- multiple-persons state (unchanged time-based debounce) ------------
   DateTime? _multiplePersonsSince;
-  bool _inattentiveFired = false;
-  bool _faceMissingFired = false;
   bool _multiplePersonsFired = false;
 
   final bool _external;
 
   AttentivenessMonitor({AttentivenessConfig? config})
-      : config = config ?? const AttentivenessConfig(),
-        _external = false,
-        _service = AttentivenessService(
-          config: config ?? const AttentivenessConfig(),
-        ) {
+    : config = config ?? AttentivenessConfig(),
+      _external = false,
+      _service = AttentivenessService(config: config ?? AttentivenessConfig()) {
     if (this.config.enableSoundAlert) {
       _audioPlayer = AudioPlayer();
     }
@@ -117,13 +174,15 @@ class AttentivenessMonitor {
   /// Use when something else already owns the camera (e.g. a LiveKit call
   /// screen). No camera is opened by this monitor — call [pushFrame]
   /// yourself with frames captured however you like (a periodic snapshot
-  /// of the local video renderer, for instance).
+  /// of the local video renderer, for instance — respect
+  /// [AttentivenessConfig.sampleInterval] yourself, since external mode
+  /// does not re-throttle).
   AttentivenessMonitor.externalSource({AttentivenessConfig? config})
-      : config = config ?? const AttentivenessConfig(),
-        _external = true,
-        _service = AttentivenessService.externalSource(
-          config: config ?? const AttentivenessConfig(),
-        ) {
+    : config = config ?? AttentivenessConfig(),
+      _external = true,
+      _service = AttentivenessService.externalSource(
+        config: config ?? AttentivenessConfig(),
+      ) {
     if (this.config.enableSoundAlert) {
       _audioPlayer = AudioPlayer();
     }
@@ -136,9 +195,10 @@ class AttentivenessMonitor {
   /// it just spins up the face detector in this mode, no camera involved.
   Future<void> pushFrame(InputImage inputImage) async {
     if (!_external) {
-      throw StateError('pushFrame is only for AttentivenessMonitor.externalSource().');
+      throw StateError(
+        'pushFrame is only for AttentivenessMonitor.externalSource().',
+      );
     }
-    print("InputImage ${inputImage.filePath}");
     await _service.pushFrame(inputImage);
   }
 
@@ -157,6 +217,31 @@ class AttentivenessMonitor {
     _dismissedForSession = false;
   }
 
+  /// Call this when the learner responds "I'm here" / "Ok" to the prompt
+  /// shown from [onBecameInattentive]. Forcefully resets the monitor's
+  /// state to attentive — clears the smoothing window, the consecutive
+  /// counter, and [isIgnoring] — and stops the alert sound. The next raw
+  /// frame classification starts building a fresh window from scratch.
+  Future<void> markAttentive() async {
+    _resetInattentiveTracking();
+    status.value = AttentivenessStatus.attentive;
+    await _stopAlertSound();
+  }
+
+  /// Call this when the learner chooses "Ignore" on the prompt shown from
+  /// [onBecameInattentive] instead of confirming. The dialog will not be
+  /// shown again for this same inattentive stretch, but the monitor keeps
+  /// tracking: every extra [AttentivenessConfig.ignoreRepeatConfirmCount]
+  /// confirmed inattentive samples (30s by default) fires
+  /// [onInattentiveWhileIgnoring], and if the learner becomes attentive
+  /// again, [onBecameAttentiveWhileIgnoring] fires once. Stops the alert
+  /// sound so it doesn't keep looping while ignored.
+  Future<void> ignoreInattentiveness() async {
+    _isIgnoring = true;
+    _lastIgnoreNotifyCount = _consecutiveInattentive;
+    await _stopAlertSound();
+  }
+
   /// Requests camera permission and starts monitoring. Safe to call again
   /// after [pause].
   ///
@@ -164,14 +249,11 @@ class AttentivenessMonitor {
   /// session (see [dismissForSession]). Pass `ignoreDismissal: true` to
   /// force a start anyway (e.g. an instructor-forced proctored exam mode).
   Future<void> start({bool ignoreDismissal = false}) async {
-    print('start() entered — isRunning=${_service.isRunning}, dismissed=$_dismissedForSession');
     if (_service.isRunning) return;
     if (!ignoreDismissal && _dismissedForSession) return;
     if (_external) {
-      print("start called on external source");
       await _service.startExternal();
     } else {
-      print("start called on own source");
       await _service.start();
     }
     _subscription = _service.results.listen(_handleResult);
@@ -193,24 +275,23 @@ class AttentivenessMonitor {
 
   void _handleResult(AttentivenessResult result) {
     status.value = result.status;
-    print("status.value = ${status.value}");
     onSample?.call(result);
 
-    final now = result.timestamp;
-
-    // --- multiple-persons tracking -----------------------------------
+    // --- multiple-persons tracking (unchanged, time-based) ---------------
     if (config.enableMultiplePersonDetection &&
         result.status == AttentivenessStatus.multiplePersonsDetected) {
-      _multiplePersonsSince ??= now;
+      _multiplePersonsSince ??= result.timestamp;
       if (!_multiplePersonsFired &&
-          now.difference(_multiplePersonsSince!) >=
+          result.timestamp.difference(_multiplePersonsSince!) >=
               config.multiplePersonsGracePeriod) {
         _multiplePersonsFired = true;
         _playAlertSound();
         onMultiplePersonsDetected?.call(result);
+        _multiplePersonsSince = null;
+        _multiplePersonsFired = false;
       }
-      // Multiple people in frame makes the face-missing/inattentive checks
-      // below moot for this frame, so stop here.
+      // Multiple people in frame makes the inattentive window logic below
+      // moot for this frame, so stop here (matches previous behaviour).
       return;
     } else {
       if (_multiplePersonsFired) onMultiplePersonsCleared?.call(result);
@@ -218,44 +299,75 @@ class AttentivenessMonitor {
       _multiplePersonsFired = false;
     }
 
-    // --- face-missing tracking -------------------------------------------
-    // if (result.status == AttentivenessStatus.faceNotDetected) {
-    //   _faceMissingSince ??= now;
-    //   if (!_faceMissingFired &&
-    //       now.difference(_faceMissingSince!) >= config.faceMissingGracePeriod) {
-    //     _faceMissingFired = true;
-    //     _playAlertSound();
-    //     onFaceMissing?.call(result);
-    //   }
-    // } else {
-    //   if (_faceMissingFired) onFaceReturned?.call(result);
-    //   _faceMissingSince = null;
-    //   _faceMissingFired = false;
-    // }
-
-    // --- inattentive tracking (looking away / eyes closed) ----------------
-    final isInattentiveNow = result.status == AttentivenessStatus.lookingLeft ||
+    // --- inattentive tracking: sliding window + confirm-count -------------
+    final isRawInattentive =
+        result.status == AttentivenessStatus.lookingLeft ||
         result.status == AttentivenessStatus.lookingRight ||
-        result.status == AttentivenessStatus.eyesClosed || result.status == AttentivenessStatus.faceNotDetected;
+        result.status == AttentivenessStatus.eyesClosed ||
+        result.status == AttentivenessStatus.faceNotDetected;
 
-    if (isInattentiveNow) {
-      _inattentiveSince ??= now;
-      if (!_inattentiveFired &&
-          now.difference(_inattentiveSince!) >= config.inattentiveGracePeriod) {
-        _inattentiveFired = true;
-        _playAlertSound();
-        onBecameInattentive?.call(result);
+    _recentInattentiveFlags.add(isRawInattentive);
+    if (_recentInattentiveFlags.length > config.inattentiveWindowSize) {
+      _recentInattentiveFlags.removeAt(0);
+    }
+
+    final windowInattentive = _evaluateWindow();
+
+    if (windowInattentive) {
+      _consecutiveInattentive++;
+
+      if (!_isIgnoring) {
+        if (!_promptFired &&
+            _consecutiveInattentive >= config.inattentiveConfirmCount) {
+          _promptFired = true;
+          _playAlertSound();
+          onBecameInattentive?.call(result);
+        }
+      } else {
+        if (_consecutiveInattentive - _lastIgnoreNotifyCount >=
+            config.ignoreRepeatConfirmCount) {
+          _lastIgnoreNotifyCount = _consecutiveInattentive;
+          onInattentiveWhileIgnoring?.call(result);
+        }
       }
-    } else if (result.status == AttentivenessStatus.attentive) {
-      if (_inattentiveFired) onBecameAttentive?.call(result);
-      _inattentiveSince = null;
-      _inattentiveFired = false;
+    } else {
+      // Window says attentive — resolve whichever state we were in.
+      if (_isIgnoring) {
+        onBecameAttentiveWhileIgnoring?.call(result);
+      } else if (_promptFired) {
+        onBecameAttentive?.call(result);
+      }
+      _resetInattentiveTracking();
       _stopAlertSound();
     }
   }
 
+  /// Scores the current sliding window of raw per-frame flags:
+  ///  - If the window is full ([AttentivenessConfig.inattentiveWindowSize]
+  ///    entries), it's "inattentive" on a majority (e.g. 2 of 3).
+  ///  - If the window hasn't filled up yet (e.g. only 2 samples exist so
+  ///    far), it's "inattentive" only if ALL of them are (e.g. 2 of 2).
+  bool _evaluateWindow() {
+    final n = _recentInattentiveFlags.length;
+    if (n == 0) return false;
+    final trueCount = _recentInattentiveFlags.where((f) => f).length;
+    final isFull = n >= config.inattentiveWindowSize;
+    final threshold = isFull ? (config.inattentiveWindowSize / 2).ceil() : n;
+    return trueCount >= threshold;
+  }
+
+  void _resetInattentiveTracking() {
+    _recentInattentiveFlags.clear();
+    _consecutiveInattentive = 0;
+    _promptFired = false;
+    _isIgnoring = false;
+    _lastIgnoreNotifyCount = 0;
+  }
+
   Future<void> _ensureAudioLoaded() async {
-    if (_audioLoaded || _audioPlayer == null || config.alertSoundAsset == null) {
+    if (_audioLoaded ||
+        _audioPlayer == null ||
+        config.alertSoundAsset == null) {
       return;
     }
     await _audioPlayer!.setAsset(config.alertSoundAsset!);
