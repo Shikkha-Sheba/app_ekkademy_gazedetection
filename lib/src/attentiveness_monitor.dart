@@ -31,6 +31,11 @@
 //
 //   monitor.onBecameInattentive = (result) async {
 //     // buzzer is already playing (enableSoundAlert); show the prompt.
+//     // NOTE: this callback keeps re-firing every `inattentiveConfirmCount`
+//     // samples while the learner stays inattentive (e.g. every 30s with
+//     // AttentivenessConfig.classroomFast). showAttentivenessPrompt()
+//     // auto-dismisses its own previous dialog first, so calling it again
+//     // here just swaps the old prompt for a fresh one.
 //     final res = await showAttentivenessPrompt(context: context);
 //     if (res?.confirmed ?? false) {
 //       // Learner tapped "I'm here" — force the state back to attentive.
@@ -104,14 +109,22 @@ class AttentivenessMonitor {
   bool get isIgnoring => _isIgnoring;
   bool _isIgnoring = false;
 
-  /// Fires once when the learner has been continuously (confirmed, smoothed)
+  /// Fires when the learner has been continuously (confirmed, smoothed)
   /// distracted for [AttentivenessConfig.inattentiveConfirmCount] consecutive
   /// samples — 30 seconds with the default config (3 samples x 10s
-  /// sampleInterval). This is your cue to show
-  /// [showAttentivenessPrompt]. Will not fire again until the learner either
-  /// returns to attentive (via a real frame) or is force-marked attentive
-  /// via [markAttentive], and does not fire again at all while
-  /// [isIgnoring] is true.
+  /// sampleInterval). This is your cue to show [showAttentivenessPrompt];
+  /// since that helper auto-dismisses any prompt it still has open, calling
+  /// it again from a later firing of this callback just swaps the old
+  /// dialog for a fresh one rather than stacking.
+  ///
+  /// Keeps re-firing every additional
+  /// [AttentivenessConfig.inattentiveConfirmCount] consecutive inattentive
+  /// samples (another 30s by default) for as long as the learner stays
+  /// inattentive, so a new prompt keeps replacing the old one roughly every
+  /// 30s. Stops re-firing once the learner either returns to attentive (via
+  /// a real frame — fires [onBecameAttentive] once), is force-marked
+  /// attentive via [markAttentive], or taps "Ignore" (see [isIgnoring] /
+  /// [onInattentiveWhileIgnoring]).
   AttentivenessCallback? onBecameInattentive;
 
   /// Fires once when the learner returns to "attentive" after having
@@ -154,6 +167,7 @@ class AttentivenessMonitor {
   final List<bool> _recentInattentiveFlags = [];
   int _consecutiveInattentive = 0;
   bool _promptFired = false;
+  int _lastPromptNotifyCount = 0;
   int _lastIgnoreNotifyCount = 0;
 
   // --- multiple-persons state (unchanged time-based debounce) ------------
@@ -317,8 +331,12 @@ class AttentivenessMonitor {
       _consecutiveInattentive++;
 
       if (!_isIgnoring) {
-        if (!_promptFired &&
-            _consecutiveInattentive >= config.inattentiveConfirmCount) {
+        // Re-fires every `inattentiveConfirmCount` samples (not just once),
+        // so a fresh prompt keeps replacing the previous one for as long as
+        // the learner stays inattentive.
+        if (_consecutiveInattentive - _lastPromptNotifyCount >=
+            config.inattentiveConfirmCount) {
+          _lastPromptNotifyCount = _consecutiveInattentive;
           _promptFired = true;
           _playAlertSound();
           onBecameInattentive?.call(result);
@@ -361,6 +379,7 @@ class AttentivenessMonitor {
     _consecutiveInattentive = 0;
     _promptFired = false;
     _isIgnoring = false;
+    _lastPromptNotifyCount = 0;
     _lastIgnoreNotifyCount = 0;
   }
 

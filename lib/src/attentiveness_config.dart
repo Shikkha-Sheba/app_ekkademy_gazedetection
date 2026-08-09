@@ -220,6 +220,33 @@ class AttentivenessConfig {
     multiplePersonsGracePeriod: const Duration(seconds: 5),
   );
 
+  /// Tuned for `AttentivenessMonitor.externalSource` classroom usage where
+  /// the host app pushes one frame every 15s (e.g. a periodic snapshot of
+  /// the LiveKit local video tile fed via [pushFrame]).
+  ///
+  /// [inattentiveWindowSize] is 1 — no smoothing window, each pushed frame
+  /// is judged purely on its own raw classification. Combined with
+  /// [inattentiveConfirmCount] = 2, that means: the learner must be
+  /// raw-inattentive on 2 CONSECUTIVE pushed frames (15s apart = 30s total)
+  /// before `onBecameInattentive` fires — a single bad frame (blink, brief
+  /// glance) never triggers it, but two in a row does. A frame that comes
+  /// back attentive resets the streak immediately.
+  ///
+  /// `AttentivenessMonitor` also re-fires `onBecameInattentive` every
+  /// further 2 consecutive raw-inattentive frames (another 30s) for as long
+  /// as the learner stays inattentive and hasn't tapped "Ignore" — so if you
+  /// call [showAttentivenessPrompt] from that callback, a fresh prompt
+  /// replaces any prompt still on screen every ~30s instead of only firing
+  /// once.
+  static final AttentivenessConfig classroomFast = AttentivenessConfig(
+    sampleInterval: const Duration(seconds: 15),
+    multiplePersonsCheckInterval: const Duration(seconds: 15),
+    inattentiveWindowSize: 1,
+    inattentiveConfirmCount: 2,
+    ignoreRepeatConfirmCount: 2,
+    multiplePersonsGracePeriod: const Duration(seconds: 15),
+  );
+
   AttentivenessConfig copyWith({
     Duration? sampleInterval,
     Duration? multiplePersonsCheckInterval,

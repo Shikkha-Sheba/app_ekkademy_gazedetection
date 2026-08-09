@@ -54,9 +54,26 @@ class AttentivenessDialogTheme {
       AttentivenessDialogTheme();
 }
 
+/// Tracks the currently-open prompt (if any) so a new call to
+/// [showAttentivenessPrompt] can dismiss it before showing the next one,
+/// instead of stacking dialogs on top of each other. Module-private —
+/// there's only ever one attentiveness prompt on screen at a time by
+/// design, since [AttentivenessMonitor] re-fires `onBecameInattentive`
+/// periodically (e.g. every 30s) for as long as the learner stays
+/// inattentive.
+BuildContext? _openPromptContext;
+Future<AttentivenessPromptResult?>? _openPromptFuture;
+
 /// Shows a blocking prompt asking the learner to confirm they're still
 /// paying attention (or, with [showMultiplePersonsWarning], that only they
-/// are in frame). Returns `null` if dismissed without response.
+/// are in frame).
+///
+/// If a previous prompt from this function is still on screen (e.g.
+/// [AttentivenessMonitor.onBecameInattentive] fired again 30s later while
+/// the learner never responded), that old prompt is dismissed first and
+/// this one takes its place — the dialog never stacks. The awaited call
+/// from that earlier, now-replaced prompt resolves to `null` (dismissed
+/// without an explicit response) once it's popped.
 Future<AttentivenessPromptResult?> showAttentivenessPrompt({
   required BuildContext context,
   String title = 'You Are Distracted!',
@@ -65,23 +82,45 @@ Future<AttentivenessPromptResult?> showAttentivenessPrompt({
   bool showMultiplePersonsWarning = false,
   bool showIgnoreOption = true,
   AttentivenessDialogTheme theme = AttentivenessDialogTheme.defaultTheme,
-}) {
-  return showGeneralDialog<AttentivenessPromptResult>(
+}) async {
+  // Dismiss whichever prompt is currently showing, and wait for it to
+  // actually finish popping before pushing the new one — pushing while a
+  // pop is still resolving can otherwise race the navigator.
+  final ctx = _openPromptContext;
+  final previousFuture = _openPromptFuture;
+  if (ctx != null && previousFuture != null) {
+    if (ctx.mounted && Navigator.of(ctx, rootNavigator: true).canPop()) {
+      Navigator.of(ctx, rootNavigator: true).pop();
+    }
+    await previousFuture;
+  }
+
+  final future = showGeneralDialog<AttentivenessPromptResult>(
     context: context,
     barrierDismissible: false,
     barrierColor: Colors.black87,
     transitionDuration: const Duration(milliseconds: 250),
     transitionBuilder: (ctx, anim, _, child) =>
         FadeTransition(opacity: anim, child: child),
-    pageBuilder: (ctx, _, __) => AttentivenessPromptDialog(
-      title: title,
-      message: message,
-      showDontShowAgainOption: showDontShowAgainOption,
-      showMultiplePersonsWarning: showMultiplePersonsWarning,
-
-      theme: theme,
-    ),
+    pageBuilder: (ctx, _, __) {
+      _openPromptContext = ctx;
+      return AttentivenessPromptDialog(
+        title: title,
+        message: message,
+        showDontShowAgainOption: showDontShowAgainOption,
+        showMultiplePersonsWarning: showMultiplePersonsWarning,
+        theme: theme,
+      );
+    },
   );
+  _openPromptFuture = future;
+
+  final result = await future;
+  if (identical(_openPromptFuture, future)) {
+    _openPromptContext = null;
+    _openPromptFuture = null;
+  }
+  return result;
 }
 
 class AttentivenessPromptDialog extends StatefulWidget {
