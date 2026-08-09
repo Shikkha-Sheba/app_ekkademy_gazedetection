@@ -27,6 +27,22 @@
 // further `multiplePersonsConfirmCount` consecutive frames for as long as
 // the extra face stays in view.
 //
+// DISTRACTED vs MULTIFACE SHARE ONE STREAK — a frame is classified as
+// exactly one of attentive / distracted / multiface, never more than one,
+// and the "how many consecutive frames of the same kind in a row" counter
+// is shared across the two alert categories rather than tracked
+// independently. That means:
+//   - distracted, distracted -> onBecameInattentive fires on the 2nd frame
+//     (with inattentiveConfirmCount 2).
+//   - distracted, multiface -> the mismatch doesn't count toward EITHER
+//     alert; the multiface frame simply starts its own fresh streak at 1,
+//     as if it were the first frame of its kind seen so far.
+//   - any attentive frame immediately zeroes the streak no matter what it
+//     was mid-way through.
+//   - firing either alert also immediately zeroes the streak (not just the
+//     re-fire cadence) — the next alert of either kind needs a brand new
+//     run of consecutive same-category frames from scratch.
+//
 // THE PROMPT / IGNORE / FORCE-ATTENTIVE FLOW:
 //
 //   final monitor = AttentivenessMonitor(config: AttentivenessConfig.relaxed);
@@ -82,6 +98,11 @@ import 'attentiveness_models.dart';
 import 'attentiveness_service.dart';
 
 typedef AttentivenessCallback = void Function(AttentivenessResult result);
+
+/// The three mutually-exclusive buckets a single processed frame falls
+/// into, used by [AttentivenessMonitor]'s unified consecutive-streak
+/// tracking (see the field doc on `_lastCategory` below).
+enum _FrameCategory { attentive, distracted, multiface }
 
 class AttentivenessMonitor {
   final AttentivenessConfig config;
@@ -172,18 +193,29 @@ class AttentivenessMonitor {
   /// attention over time.
   AttentivenessCallback? onSample;
 
-  // --- sliding-window / confirm-count state for inattentiveness ----------
+  // --- sliding-window smoothing for the "distracted" raw classification
+  // only (see AttentivenessConfig.inattentiveWindowSize doc). Multiface
+  // has no smoothing — it's driven by the raw per-frame flag directly. ----
   final List<bool> _recentInattentiveFlags = [];
-  int _consecutiveInattentive = 0;
-  bool _promptFired = false;
-  int _lastPromptNotifyCount = 0;
-  int _lastIgnoreNotifyCount = 0;
 
-  // --- multiple-persons state: same consecutive-streak + repeat-notify
-  // pattern as inattentiveness above, driven by
-  // AttentivenessConfig.multiplePersonsConfirmCount. ----------------------
-  int _consecutiveMultiPerson = 0;
-  int _lastMultiNotifyCount = 0;
+  // --- unified consecutive-streak state across BOTH alert categories.
+  // Only one of {distracted, multiface} is ever "current" at a time: a
+  // frame whose category differs from `_lastCategory` does NOT extend the
+  // previous streak — it starts a brand new streak of length 1 for its own
+  // category instead (a distracted->multiface->distracted sequence never
+  // fires either alert off 2 total frames of the same kind that weren't
+  // actually consecutive). Firing an alert immediately zeroes this state,
+  // so the next alert (of either kind) needs a fresh streak from scratch —
+  // no partial carry-over. Any attentive frame also zeroes this state
+  // immediately. -----------------------------------------------------------
+  _FrameCategory? _lastCategory;
+  int _streakCount = 0;
+
+  // --- "have we alerted since the last real attentive frame" bookkeeping,
+  // kept separate from the streak counters above so onBecameAttentive /
+  // onMultiplePersonsCleared still fire correctly even though the streak
+  // itself got zeroed out the moment the alert fired. --------------------
+  bool _promptFired = false;
   bool _multiFired = false;
 
   final bool _external;
@@ -249,7 +281,9 @@ class AttentivenessMonitor {
   /// counter, and [isIgnoring] — and stops the alert sound. The next raw
   /// frame classification starts building a fresh window from scratch.
   Future<void> markAttentive() async {
-    _resetInattentiveTracking();
+    _resetStreak();
+    _promptFired = false;
+    _isIgnoring = false;
     status.value = AttentivenessStatus.attentive;
     await _stopAlertSound();
   }
@@ -264,7 +298,6 @@ class AttentivenessMonitor {
   /// sound so it doesn't keep looping while ignored.
   Future<void> ignoreInattentiveness() async {
     _isIgnoring = true;
-    _lastIgnoreNotifyCount = _consecutiveInattentive;
     await _stopAlertSound();
   }
 
@@ -303,29 +336,23 @@ class AttentivenessMonitor {
     status.value = result.status;
     onSample?.call(result);
 
-    // --- multiple-persons tracking: consecutive-streak + repeat-notify,
-    // same pattern as the distracted-tracking below. -----------------------
-    if (config.enableMultiplePersonDetection &&
-        result.status == AttentivenessStatus.multiplePersonsDetected) {
-      _consecutiveMultiPerson++;
-      if (_consecutiveMultiPerson - _lastMultiNotifyCount >=
-          config.multiplePersonsConfirmCount) {
-        _lastMultiNotifyCount = _consecutiveMultiPerson;
-        _multiFired = true;
-        _playAlertSound();
-        onMultiplePersonsDetected?.call(result);
-      }
-      // Multiple people in frame makes the inattentive window logic below
-      // moot for this frame, so stop here (matches previous behaviour).
+    final isMultiface =
+        config.enableMultiplePersonDetection &&
+        result.status == AttentivenessStatus.multiplePersonsDetected;
+
+    if (isMultiface) {
+      // A multiface frame makes the inattentive window logic below moot
+      // for this frame (matches previous behaviour) — go straight to the
+      // unified streak handling.
+      _advanceStreak(_FrameCategory.multiface, result);
       return;
-    } else {
-      if (_multiFired) onMultiplePersonsCleared?.call(result);
-      _consecutiveMultiPerson = 0;
-      _lastMultiNotifyCount = 0;
-      _multiFired = false;
     }
 
-    // --- inattentive tracking: sliding window + confirm-count -------------
+    // Not a multiface frame — clear any pending "multiple persons" alert.
+    if (_multiFired) onMultiplePersonsCleared?.call(result);
+    _multiFired = false;
+
+    // --- "distracted" classification: sliding window + smoothing --------
     final isRawInattentive =
         result.status == AttentivenessStatus.lookingLeft ||
         result.status == AttentivenessStatus.lookingRight ||
@@ -337,38 +364,65 @@ class AttentivenessMonitor {
       _recentInattentiveFlags.removeAt(0);
     }
 
-    final windowInattentive = _evaluateWindow();
-
-    if (windowInattentive) {
-      _consecutiveInattentive++;
-
-      if (!_isIgnoring) {
-        // Re-fires every `inattentiveConfirmCount` samples (not just once),
-        // so a fresh prompt keeps replacing the previous one for as long as
-        // the learner stays inattentive.
-        if (_consecutiveInattentive - _lastPromptNotifyCount >=
-            config.inattentiveConfirmCount) {
-          _lastPromptNotifyCount = _consecutiveInattentive;
-          _promptFired = true;
-          _playAlertSound();
-          onBecameInattentive?.call(result);
-        }
-      } else {
-        if (_consecutiveInattentive - _lastIgnoreNotifyCount >=
-            config.ignoreRepeatConfirmCount) {
-          _lastIgnoreNotifyCount = _consecutiveInattentive;
-          onInattentiveWhileIgnoring?.call(result);
-        }
-      }
+    if (_evaluateWindow()) {
+      _advanceStreak(_FrameCategory.distracted, result);
     } else {
-      // Window says attentive — resolve whichever state we were in.
+      // Attentive — resolve whichever state we were in and fully reset.
       if (_isIgnoring) {
         onBecameAttentiveWhileIgnoring?.call(result);
       } else if (_promptFired) {
         onBecameAttentive?.call(result);
       }
-      _resetInattentiveTracking();
+      _isIgnoring = false;
+      _promptFired = false;
+      _resetStreak();
       _stopAlertSound();
+    }
+  }
+
+  /// Advances the unified consecutive-streak counter for [category] (a
+  /// non-attentive frame — attentive is handled separately in
+  /// [_handleResult], since it resets everything unconditionally rather
+  /// than joining a streak).
+  ///
+  /// If [category] matches [_lastCategory] the streak continues; otherwise
+  /// a mismatched category (e.g. distracted immediately followed by
+  /// multiface) discards whatever streak was building and starts a brand
+  /// new one at 1 for [category] — the mismatched frame itself is never
+  /// silently dropped, it just becomes the first sample of its own kind.
+  ///
+  /// Once the streak reaches the relevant confirm count the matching
+  /// callback fires and the streak is immediately zeroed back to scratch,
+  /// so the *next* alert (of either kind) needs a fresh run of consecutive
+  /// same-category frames rather than continuing to build on a partial
+  /// count left over from before.
+  void _advanceStreak(_FrameCategory category, AttentivenessResult result) {
+    _streakCount = category == _lastCategory ? _streakCount + 1 : 1;
+    _lastCategory = category;
+
+    if (category == _FrameCategory.multiface) {
+      if (_streakCount >= config.multiplePersonsConfirmCount) {
+        _multiFired = true;
+        _playAlertSound();
+        onMultiplePersonsDetected?.call(result);
+        _resetStreak();
+      }
+      return;
+    }
+
+    // category == distracted
+    if (!_isIgnoring) {
+      if (_streakCount >= config.inattentiveConfirmCount) {
+        _promptFired = true;
+        _playAlertSound();
+        onBecameInattentive?.call(result);
+        _resetStreak();
+      }
+    } else {
+      if (_streakCount >= config.ignoreRepeatConfirmCount) {
+        onInattentiveWhileIgnoring?.call(result);
+        _resetStreak();
+      }
     }
   }
 
@@ -386,13 +440,16 @@ class AttentivenessMonitor {
     return trueCount >= threshold;
   }
 
-  void _resetInattentiveTracking() {
+  /// Zeroes the unified streak counter and the distraction smoothing
+  /// window. Does NOT touch [_isIgnoring] / [_promptFired] / [_multiFired]
+  /// — those are resolved explicitly by whichever caller needs to (a real
+  /// attentive frame, or [markAttentive]), since they track "have we
+  /// alerted since the last real attentive frame", a separate concern from
+  /// "how long is the current same-category streak".
+  void _resetStreak() {
     _recentInattentiveFlags.clear();
-    _consecutiveInattentive = 0;
-    _promptFired = false;
-    _isIgnoring = false;
-    _lastPromptNotifyCount = 0;
-    _lastIgnoreNotifyCount = 0;
+    _streakCount = 0;
+    _lastCategory = null;
   }
 
   Future<void> _ensureAudioLoaded() async {
