@@ -445,11 +445,14 @@ class AttentivenessMonitor {
   /// — those are resolved explicitly by whichever caller needs to (a real
   /// attentive frame, or [markAttentive]), since they track "have we
   /// alerted since the last real attentive frame", a separate concern from
-  /// "how long is the current same-category streak".
+  /// "how long is the current same-category streak". Also zeroes the
+  /// service's debug "Running: Xs" counter, since that's meant to track
+  /// time-since-last-reset, not time-since-camera-started.
   void _resetStreak() {
     _recentInattentiveFlags.clear();
     _streakCount = 0;
     _lastCategory = null;
+    _service.resetElapsedTimer();
   }
 
   Future<void> _ensureAudioLoaded() async {

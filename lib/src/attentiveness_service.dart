@@ -94,6 +94,17 @@ class AttentivenessService {
     });
   }
 
+  /// Zeroes the debug "Running: Xs" counter without touching the timer
+  /// itself (it keeps ticking every second) — called by
+  /// [AttentivenessMonitor] every time its own attentiveness/multiface
+  /// streak resets (a real attentive frame, or right after
+  /// onBecameInattentive / onMultiplePersonsDetected fires), so this log
+  /// counter tracks "time since the process last reset" rather than
+  /// "time since the camera/detector started".
+  void resetElapsedTimer() {
+    _elapsedSeconds = 0;
+  }
+
   /// Starts the face detector for external-frame mode. Does not touch the
   /// camera at all — call [pushFrame] to feed it frames.
   Future<void> startExternal() async {
