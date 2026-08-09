@@ -16,14 +16,16 @@
 // trigger `onBecameInattentive`.
 //
 // HOW MULTIPLE-PERSONS IS DECIDED — also see attentiveness_config.dart.
-// In short: the instant a second face shows up, AttentivenessService itself
-// switches to a much faster internal sampling cadence
-// (`multiplePersonsCheckInterval`, 5s by default) so the presence can be
-// confirmed by several quick frames instead of one. `onMultiplePersonsDetected`
-// fires once that second face has stayed in frame continuously for
-// `multiplePersonsGracePeriod` (15s by default) — this class doesn't need to
-// know about the faster cadence, it just keeps applying the same
-// time-since-first-seen check to whatever frames arrive.
+// In short: `onMultiplePersonsDetected` fires once a second face has shown
+// up on `multiplePersonsConfirmCount` CONSECUTIVE processed frames (default
+// 3) — any frame without a second face resets that streak to zero. On the
+// camera-owning path, AttentivenessService still switches to a much faster
+// internal sampling cadence (`multiplePersonsCheckInterval`, 5s by default)
+// the instant a second face shows up, so that streak is still confirmed
+// quickly in real time; this class itself just counts consecutive frames,
+// it doesn't need to know about the faster cadence. Keeps re-firing every
+// further `multiplePersonsConfirmCount` consecutive frames for as long as
+// the extra face stays in view.
 //
 // THE PROMPT / IGNORE / FORCE-ATTENTIVE FLOW:
 //
@@ -145,17 +147,24 @@ class AttentivenessMonitor {
   /// was true. Also clears [isIgnoring].
   AttentivenessCallback? onBecameAttentiveWhileIgnoring;
 
-  /// Fires once when more than one face has been continuously visible for
-  /// [AttentivenessConfig.multiplePersonsGracePeriod] (15s by default) —
-  /// someone else is with the learner, or looking over their shoulder.
-  /// Behind the scenes, [AttentivenessService] samples faster
-  /// ([AttentivenessConfig.multiplePersonsCheckInterval]) for the duration
-  /// of the burst, so this is confirmed by several frames within that 15s,
-  /// not just one.
+  /// Fires when more than one face has been detected on
+  /// [AttentivenessConfig.multiplePersonsConfirmCount] CONSECUTIVE processed
+  /// frames — someone else is with the learner, or looking over their
+  /// shoulder. With the default (and [AttentivenessConfig.classroomFast])
+  /// config that's 2 consecutive frames — e.g. two 15s-apart pushed frames
+  /// both showing a second face (~30s total).
+  ///
+  /// A single non-multi frame in between (whether it's attentive OR
+  /// distracted) breaks the streak back to zero, and — just like
+  /// [onBecameInattentive] — this keeps re-firing every further
+  /// [AttentivenessConfig.multiplePersonsConfirmCount] consecutive
+  /// multi-person frames for as long as the extra face keeps showing up, so
+  /// a fresh alert keeps replacing the previous one roughly every 30s
+  /// instead of firing once and going quiet.
   AttentivenessCallback? onMultiplePersonsDetected;
 
-  /// Fires once the frame drops back to a single face (or none) after
-  /// [onMultiplePersonsDetected] triggered.
+  /// Fires once the frame drops back to a single face (or none, or the
+  /// learner became distracted) after [onMultiplePersonsDetected] fired.
   AttentivenessCallback? onMultiplePersonsCleared;
 
   /// Optional: called on every single processed (raw, pre-smoothing) frame,
@@ -170,9 +179,12 @@ class AttentivenessMonitor {
   int _lastPromptNotifyCount = 0;
   int _lastIgnoreNotifyCount = 0;
 
-  // --- multiple-persons state (unchanged time-based debounce) ------------
-  DateTime? _multiplePersonsSince;
-  bool _multiplePersonsFired = false;
+  // --- multiple-persons state: same consecutive-streak + repeat-notify
+  // pattern as inattentiveness above, driven by
+  // AttentivenessConfig.multiplePersonsConfirmCount. ----------------------
+  int _consecutiveMultiPerson = 0;
+  int _lastMultiNotifyCount = 0;
+  bool _multiFired = false;
 
   final bool _external;
 
@@ -291,26 +303,26 @@ class AttentivenessMonitor {
     status.value = result.status;
     onSample?.call(result);
 
-    // --- multiple-persons tracking (unchanged, time-based) ---------------
+    // --- multiple-persons tracking: consecutive-streak + repeat-notify,
+    // same pattern as the distracted-tracking below. -----------------------
     if (config.enableMultiplePersonDetection &&
         result.status == AttentivenessStatus.multiplePersonsDetected) {
-      _multiplePersonsSince ??= result.timestamp;
-      if (!_multiplePersonsFired &&
-          result.timestamp.difference(_multiplePersonsSince!) >=
-              config.multiplePersonsGracePeriod) {
-        _multiplePersonsFired = true;
+      _consecutiveMultiPerson++;
+      if (_consecutiveMultiPerson - _lastMultiNotifyCount >=
+          config.multiplePersonsConfirmCount) {
+        _lastMultiNotifyCount = _consecutiveMultiPerson;
+        _multiFired = true;
         _playAlertSound();
         onMultiplePersonsDetected?.call(result);
-        _multiplePersonsSince = null;
-        _multiplePersonsFired = false;
       }
       // Multiple people in frame makes the inattentive window logic below
       // moot for this frame, so stop here (matches previous behaviour).
       return;
     } else {
-      if (_multiplePersonsFired) onMultiplePersonsCleared?.call(result);
-      _multiplePersonsSince = null;
-      _multiplePersonsFired = false;
+      if (_multiFired) onMultiplePersonsCleared?.call(result);
+      _consecutiveMultiPerson = 0;
+      _lastMultiNotifyCount = 0;
+      _multiFired = false;
     }
 
     // --- inattentive tracking: sliding window + confirm-count -------------

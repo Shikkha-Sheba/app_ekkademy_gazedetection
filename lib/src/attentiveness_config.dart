@@ -30,30 +30,29 @@
 //    the learner becomes attentive again while ignoring,
 //    `onBecameAttentiveWhileIgnoring` fires once instead.
 //
-// HOW "MULTIPLE PERSONS" IS DECIDED (fast-check burst, decoupled from the
-// cadence above):
+// HOW "MULTIPLE PERSONS" IS DECIDED (same window + confirm-count shape as
+// distraction above, just its own separate streak):
 //
-// Waiting a full [sampleInterval] between checks is too slow to confirm a
-// second face within ~15 seconds while still needing more than one frame of
-// evidence (a single frame could be a hand, a poster, or a detector
-// glitch). So the moment a raw frame comes back as
-// `AttentivenessStatus.multiplePersonsDetected`, `AttentivenessService`
-// temporarily switches its own sampling cadence from [sampleInterval] down
-// to the much faster [multiplePersonsCheckInterval] (default 5s) for as
-// long as the extra face keeps showing up. `AttentivenessMonitor` then
-// applies the same time-based rule as before: it fires
-// `onMultiplePersonsDetected` once the extra face has been continuously
-// visible for [multiplePersonsGracePeriod] (default 15s). Because frames
-// now arrive every 5s instead of every 10-15s during that burst, the 15s
-// grace period is naturally confirmed by 3-4 frames instead of 1, without
-// slowing down the alert. As soon as the frame drops back to a single face,
-// the service falls back to the normal [sampleInterval] cadence.
+// Every processed frame that comes back as
+// `AttentivenessStatus.multiplePersonsDetected` bumps a consecutive counter;
+// any frame that doesn't (single face, no face, or distracted) resets that
+// counter to zero. Once the counter reaches [multiplePersonsConfirmCount],
+// `onMultiplePersonsDetected` fires (default 3 consecutive frames). It then
+// keeps re-firing every further [multiplePersonsConfirmCount] consecutive
+// multi-person frames for as long as the extra face keeps showing up, and
+// fires `onMultiplePersonsCleared` once the frame drops back to a single
+// face (or none, or distracted).
 //
-// This burst is self-limiting: it only runs while a second face is
-// actually in frame, so normal single-learner viewing still costs only
-// ~3 processed frames every 30 seconds (with the defaults below), and even
-// a sustained false-multi-person burst never exceeds ~6 frames per 30s
-// (30s / 5s check interval).
+// On the camera-owning ([AttentivenessMonitor.start]) path,
+// `AttentivenessService` still temporarily switches its own sampling
+// cadence from [sampleInterval] down to the faster
+// [multiplePersonsCheckInterval] the moment a second face appears, so this
+// still confirms quickly in real time even though the rule itself is now a
+// plain frame count rather than a wall-clock duration. On the
+// [AttentivenessMonitor.externalSource] path (frames pushed manually via
+// `pushFrame`), the caller's own push cadence IS the sampling cadence — see
+// [classroomFast] for a preset tuned to a 15s push interval.
+
 
 class AttentivenessConfig {
   /// Absolute floor for [sampleInterval]. Enforced by an assertion in the
@@ -100,9 +99,17 @@ class AttentivenessConfig {
   final bool enableMultiplePersonDetection;
 
   /// Number of samples used for smoothing.
+  ///
+  /// NOT currently read by [AttentivenessMonitor] — multiple-persons
+  /// detection is driven purely by consecutive-frame counting via
+  /// [multiplePersonsConfirmCount] now, with no separate smoothing window.
+  /// Kept for API stability / potential future use.
   final int multiplePersonsWindowSize;
 
-  /// Number of consecutive confirmed windows before firing.
+  /// How many CONSECUTIVE processed frames must show more than one face
+  /// before [AttentivenessMonitor.onMultiplePersonsDetected] fires. Any
+  /// frame that doesn't show a second face resets this streak to zero.
+  /// Mirrors [inattentiveConfirmCount]'s role for distraction. Default 3.
   final int multiplePersonsConfirmCount;
 
   /// How many of the most-recent raw per-frame classifications to keep in
@@ -122,12 +129,15 @@ class AttentivenessConfig {
   final int ignoreRepeatConfirmCount;
 
   /// How long "more than one face in frame" must persist before
-  /// `onMultiplePersonsDetected` fires — i.e. the minimum time a second
-  /// person has to stay in view before it counts as a real detection rather
-  /// than a passer-by. Time-based rather than a sample count, but during
-  /// this window `AttentivenessService` is itself sampling at the faster
-  /// [multiplePersonsCheckInterval], so by default this is confirmed by
-  /// several frames (not just one) while still firing within ~15 seconds.
+  /// `onMultiplePersonsDetected` fires.
+  ///
+  /// NOT currently read by [AttentivenessMonitor] — multiple-persons
+  /// detection is now driven by [multiplePersonsConfirmCount] consecutive
+  /// frames instead of a wall-clock duration, for the same reason
+  /// distraction detection uses [inattentiveConfirmCount]: it scales
+  /// correctly whether frames arrive every 5s (camera-owning path) or
+  /// every 15-20s (a slower externalSource capture cadence). Kept for API
+  /// stability / potential future use.
   final Duration multiplePersonsGracePeriod;
 
   /// Whether to play a looping alert sound while an inattentive/multiple-
@@ -188,8 +198,9 @@ class AttentivenessConfig {
   /// glasses glare) would be disruptive. Frames every 20s; needs 2
   /// confirmed windowed-inattentive samples (~40s) before the prompt fires.
   /// Multiple-persons still fast-checks at 10s once a second face appears,
-  /// so it's confirmed by ~2 frames within its (longer, more forgiving) 20s
-  /// grace period.
+  /// and (with the default [multiplePersonsConfirmCount] of 3) needs 3
+  /// consecutive multi-person frames at that faster cadence (~30s) before
+  /// `onMultiplePersonsDetected` fires.
   static final AttentivenessConfig relaxed = AttentivenessConfig(
     sampleInterval: const Duration(seconds: 20),
     multiplePersonsCheckInterval: const Duration(seconds: 10),
@@ -199,15 +210,15 @@ class AttentivenessConfig {
     inattentiveWindowSize: 3,
     inattentiveConfirmCount: 2,
     ignoreRepeatConfirmCount: 2,
-    multiplePersonsGracePeriod: const Duration(seconds: 20),
   );
 
   /// Tighter thresholds — for contexts where you want to catch distraction
   /// quickly (e.g. a proctored assessment). Uses the fastest allowed
   /// sampling rate (5s) so 3 confirmed samples (majority-of-3 once the
   /// window is full) = 15s of confirmed inattentiveness before the prompt
-  /// fires. Multiple-persons fast-checks at the same 5s cadence, so its
-  /// 15s grace period is confirmed by 3-4 frames.
+  /// fires. Multiple-persons fast-checks at the same 5s cadence, and (with
+  /// the default [multiplePersonsConfirmCount] of 3) needs 3 consecutive
+  /// multi-person frames (~15s) before `onMultiplePersonsDetected` fires.
   static final AttentivenessConfig strict = AttentivenessConfig(
     sampleInterval: minSampleInterval,
     multiplePersonsCheckInterval: minMultiplePersonsCheckInterval,
@@ -217,34 +228,39 @@ class AttentivenessConfig {
     inattentiveWindowSize: 3,
     inattentiveConfirmCount: 3,
     ignoreRepeatConfirmCount: 3,
-    multiplePersonsGracePeriod: const Duration(seconds: 5),
   );
 
   /// Tuned for `AttentivenessMonitor.externalSource` classroom usage where
   /// the host app pushes one frame every 15s (e.g. a periodic snapshot of
   /// the LiveKit local video tile fed via [pushFrame]).
   ///
-  /// [inattentiveWindowSize] is 1 — no smoothing window, each pushed frame
-  /// is judged purely on its own raw classification. Combined with
-  /// [inattentiveConfirmCount] = 2, that means: the learner must be
-  /// raw-inattentive on 2 CONSECUTIVE pushed frames (15s apart = 30s total)
-  /// before `onBecameInattentive` fires — a single bad frame (blink, brief
-  /// glance) never triggers it, but two in a row does. A frame that comes
-  /// back attentive resets the streak immediately.
+  /// Both checks use the exact same rule, just on their own streak:
+  /// 2 CONSECUTIVE pushed frames (15s apart = 30s total) of the same kind
+  /// trigger the matching alert, and a frame of any other kind resets that
+  /// streak back to zero:
+  ///   - 2 consecutive distracted (looking away / eyes closed / no face)
+  ///     frames -> `onBecameInattentive` (the "distracted" alert).
+  ///   - 2 consecutive multiple-persons frames -> `onMultiplePersonsDetected`
+  ///     (the "multiple persons" alert).
+  ///   - A single attentive frame resets BOTH streaks to zero immediately —
+  ///     i.e. if either of the last 2 frames was attentive, the learner is
+  ///     considered attentive, full stop.
+  /// [inattentiveWindowSize] is 1 (no extra smoothing) so this is exactly
+  /// "2 in a row", nothing fuzzier.
   ///
-  /// `AttentivenessMonitor` also re-fires `onBecameInattentive` every
-  /// further 2 consecutive raw-inattentive frames (another 30s) for as long
-  /// as the learner stays inattentive and hasn't tapped "Ignore" — so if you
-  /// call [showAttentivenessPrompt] from that callback, a fresh prompt
-  /// replaces any prompt still on screen every ~30s instead of only firing
-  /// once.
+  /// `AttentivenessMonitor` also re-fires either callback every further 2
+  /// consecutive frames of that same kind (another 30s) for as long as it
+  /// persists, and hasn't been dismissed via [markAttentive] /
+  /// [ignoreInattentiveness] — so calling [showAttentivenessPrompt] from
+  /// the callback replaces any prompt still on screen with a fresh one
+  /// roughly every 30s instead of only firing once.
   static final AttentivenessConfig classroomFast = AttentivenessConfig(
     sampleInterval: const Duration(seconds: 15),
-    multiplePersonsCheckInterval: const Duration(seconds: 15),
+    multiplePersonsCheckInterval: minMultiplePersonsCheckInterval,
     inattentiveWindowSize: 1,
     inattentiveConfirmCount: 2,
     ignoreRepeatConfirmCount: 2,
-    multiplePersonsGracePeriod: const Duration(seconds: 15),
+    multiplePersonsConfirmCount: 2,
   );
 
   AttentivenessConfig copyWith({
