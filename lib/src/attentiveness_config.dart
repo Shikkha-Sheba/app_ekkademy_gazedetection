@@ -260,7 +260,7 @@ class AttentivenessConfig {
     inattentiveWindowSize: 1,
     inattentiveConfirmCount: 2,
     ignoreRepeatConfirmCount: 2,
-    multiplePersonsConfirmCount: 1,
+    multiplePersonsConfirmCount: 2,
   );
 
   AttentivenessConfig copyWith({
