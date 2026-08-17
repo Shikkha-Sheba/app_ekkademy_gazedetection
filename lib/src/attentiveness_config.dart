@@ -142,7 +142,11 @@ class AttentivenessConfig {
 
   /// Whether to play a looping alert sound while an inattentive/multiple-
   /// persons state is active (stops automatically once resolved, or when
-  /// you call `monitor.stopAlertSound()`).
+  /// you call `monitor.stopAlertSound()`). Defaults to `false` — turning
+  /// this on requires [alertSoundAsset] to also be set (enforced by an
+  /// assertion below), since without a real asset the alert player still
+  /// requests Android audio focus on every confirmed streak and silently
+  /// pauses whatever else is playing audio in the app (e.g. a video).
   final bool enableSoundAlert;
 
   /// Asset path for the alert sound (e.g. `'assets/sounds/alert.mp3'`).
@@ -164,7 +168,7 @@ class AttentivenessConfig {
     this.inattentiveConfirmCount = 3,
     this.ignoreRepeatConfirmCount = 3,
     this.multiplePersonsGracePeriod = const Duration(seconds: 15),
-    this.enableSoundAlert = true,
+    this.enableSoundAlert = false,
     this.alertSoundAsset,
   }) : assert(
          sampleInterval >= minSampleInterval,
@@ -191,6 +195,14 @@ class AttentivenessConfig {
        assert(
          ignoreRepeatConfirmCount >= 1,
          'ignoreRepeatConfirmCount must be >= 1',
+       ),
+       assert(
+         !enableSoundAlert || alertSoundAsset != null,
+         'alertSoundAsset is required when enableSoundAlert is true. '
+         'Without it, the alert AudioPlayer still calls play() with no '
+         'source loaded on every confirmed distraction/multi-face streak, '
+         'which requests Android audio focus and silently pauses whatever '
+         'else is playing audio (e.g. a video) before throwing internally.',
        );
 
   /// Looser thresholds and longer confirm windows — good default for live

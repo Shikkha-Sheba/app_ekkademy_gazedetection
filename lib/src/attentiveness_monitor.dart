@@ -102,7 +102,7 @@ typedef AttentivenessCallback = void Function(AttentivenessResult result);
 /// The three mutually-exclusive buckets a single processed frame falls
 /// into, used by [AttentivenessMonitor]'s unified consecutive-streak
 /// tracking (see the field doc on `_lastCategory` below).
-enum _FrameCategory { attentive, distracted, multiface }
+enum _FrameCategory { distracted, multiface }
 
 class AttentivenessMonitor {
   final AttentivenessConfig config;
@@ -221,9 +221,10 @@ class AttentivenessMonitor {
   final bool _external;
 
   AttentivenessMonitor({AttentivenessConfig? config})
-    : config = config ?? AttentivenessConfig(),
-      _external = false,
-      _service = AttentivenessService(config: config ?? AttentivenessConfig()) {
+      : config = config ?? AttentivenessConfig(),
+        _external = false,
+        _service =
+            AttentivenessService(config: config ?? AttentivenessConfig()) {
     if (this.config.enableSoundAlert) {
       _audioPlayer = AudioPlayer();
     }
@@ -236,11 +237,11 @@ class AttentivenessMonitor {
   /// [AttentivenessConfig.sampleInterval] yourself, since external mode
   /// does not re-throttle).
   AttentivenessMonitor.externalSource({AttentivenessConfig? config})
-    : config = config ?? AttentivenessConfig(),
-      _external = true,
-      _service = AttentivenessService.externalSource(
-        config: config ?? AttentivenessConfig(),
-      ) {
+      : config = config ?? AttentivenessConfig(),
+        _external = true,
+        _service = AttentivenessService.externalSource(
+          config: config ?? AttentivenessConfig(),
+        ) {
     if (this.config.enableSoundAlert) {
       _audioPlayer = AudioPlayer();
     }
@@ -336,8 +337,7 @@ class AttentivenessMonitor {
     status.value = result.status;
     onSample?.call(result);
 
-    final isMultiface =
-        config.enableMultiplePersonDetection &&
+    final isMultiface = config.enableMultiplePersonDetection &&
         result.status == AttentivenessStatus.multiplePersonsDetected;
 
     if (isMultiface) {
@@ -353,8 +353,7 @@ class AttentivenessMonitor {
     _multiFired = false;
 
     // --- "distracted" classification: sliding window + smoothing --------
-    final isRawInattentive =
-        result.status == AttentivenessStatus.lookingLeft ||
+    final isRawInattentive = result.status == AttentivenessStatus.lookingLeft ||
         result.status == AttentivenessStatus.lookingRight ||
         result.status == AttentivenessStatus.eyesClosed ||
         result.status == AttentivenessStatus.faceNotDetected;
@@ -470,6 +469,15 @@ class AttentivenessMonitor {
     if (!config.enableSoundAlert || _audioPlayer == null) return;
     try {
       await _ensureAudioLoaded();
+      // No asset configured (or it failed to load) — bail out *before*
+      // touching play(). Calling AudioPlayer.play() with nothing loaded
+      // still requests Android audio focus at the player/session level
+      // (independent of whether a source is ready), which will silently
+      // steal focus from — and auto-pause — anything else playing audio
+      // in the app (e.g. a video screen), and then throw internally once
+      // it discovers there's no source. That throw was being swallowed
+      // below, so the focus grab was the only visible side effect.
+      if (!_audioLoaded) return;
       await _audioPlayer!.seek(Duration.zero);
       await _audioPlayer!.play();
     } on Exception catch (e, st) {
