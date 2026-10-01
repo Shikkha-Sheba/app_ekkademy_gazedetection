@@ -78,6 +78,7 @@ Future<AttentivenessPromptResult?> showAttentivenessPrompt({
   required BuildContext context,
   String title = 'You Are Distracted!',
   String message = 'You are not paying attention to the lesson.',
+  String dontShowAgainOptionText = "Don't show again for this video",
   bool showDontShowAgainOption = false,
   bool showMultiplePersonsWarning = false,
   bool showIgnoreOption = true,
@@ -108,6 +109,7 @@ Future<AttentivenessPromptResult?> showAttentivenessPrompt({
         title: title,
         message: message,
         showDontShowAgainOption: showDontShowAgainOption,
+        dontShowAgainOptionText: dontShowAgainOptionText,
         showMultiplePersonsWarning: showMultiplePersonsWarning,
         theme: theme,
       );
@@ -126,6 +128,7 @@ Future<AttentivenessPromptResult?> showAttentivenessPrompt({
 class AttentivenessPromptDialog extends StatefulWidget {
   final String title;
   final String message;
+  final String dontShowAgainOptionText;
   final bool showDontShowAgainOption;
 
   /// Swaps the icon to a "group" icon — use this when the dialog is being
@@ -140,6 +143,7 @@ class AttentivenessPromptDialog extends StatefulWidget {
     required this.title,
     required this.message,
     required this.showDontShowAgainOption,
+    required this.dontShowAgainOptionText,
     this.showMultiplePersonsWarning = false,
 
     this.theme = AttentivenessDialogTheme.defaultTheme,
@@ -223,7 +227,7 @@ class _AttentivenessPromptDialogState extends State<AttentivenessPromptDialog> {
                     ),
                     Flexible(
                       child: Text(
-                        "Don't show again for this video",
+                        widget.dontShowAgainOptionText,
                         style: TextStyle(fontSize: 12, color: secondaryText),
                       ),
                     ),
