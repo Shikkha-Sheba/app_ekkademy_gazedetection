@@ -124,6 +124,11 @@ class AttentivenessMonitor {
     AttentivenessStatus.unknown,
   );
 
+  /// Live detected face emotion you can listen to directly (e.g. in a ValueListenableBuilder).
+  final ValueNotifier<FaceEmotion> emotion = ValueNotifier(
+    FaceEmotion.unknown,
+  );
+
   /// True once [onBecameInattentive] has fired and the learner has chosen
   /// to ignore the prompt via [ignoreInattentiveness], instead of
   /// confirming via [markAttentive]. While true, the dialog is not
@@ -187,6 +192,9 @@ class AttentivenessMonitor {
   /// Fires once the frame drops back to a single face (or none, or the
   /// learner became distracted) after [onMultiplePersonsDetected] fired.
   AttentivenessCallback? onMultiplePersonsCleared;
+
+  /// Optional: called when face emotion/expression is detected on a frame.
+  void Function(FaceEmotion emotion, AttentivenessResult result)? onEmotionDetected;
 
   /// Optional: called on every single processed (raw, pre-smoothing) frame,
   /// useful for debug logging or building your own analytics/heatmap of
@@ -328,12 +336,15 @@ class AttentivenessMonitor {
     await _service.stop();
     await _stopAlertSound();
     status.value = AttentivenessStatus.unknown;
+    emotion.value = FaceEmotion.unknown;
   }
 
   Future<void> resume() => start();
 
   void _handleResult(AttentivenessResult result) {
     status.value = result.status;
+    emotion.value = result.emotion;
+    onEmotionDetected?.call(result.emotion, result);
     onSample?.call(result);
 
     final isMultiface =
@@ -499,5 +510,6 @@ class AttentivenessMonitor {
     await _service.dispose();
     await _audioPlayer?.dispose();
     status.dispose();
+    emotion.dispose();
   }
 }

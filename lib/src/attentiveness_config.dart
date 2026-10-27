@@ -94,6 +94,9 @@ class AttentivenessConfig {
   /// Both eyes must be below this for `AttentivenessStatus.eyesClosed`.
   final double eyeOpenThreshold;
 
+  /// Smile probability (0.0–1.0) above which the face is classified as happy.
+  final double smileThreshold;
+
   /// Whether to check for more than one face in frame at all. Turn this off
   /// if you don't care about "someone else is watching over their shoulder".
   final bool enableMultiplePersonDetection;
@@ -157,6 +160,7 @@ class AttentivenessConfig {
     this.maxHeadYawDegrees = 25,
     this.maxHeadPitchDegrees = 20,
     this.eyeOpenThreshold = 0.4,
+    this.smileThreshold = 0.55,
     this.multiplePersonsWindowSize = 3,
     this.multiplePersonsConfirmCount = 3,
     this.enableMultiplePersonDetection = true,
@@ -269,6 +273,7 @@ class AttentivenessConfig {
     double? maxHeadYawDegrees,
     double? maxHeadPitchDegrees,
     double? eyeOpenThreshold,
+    double? smileThreshold,
     bool? enableMultiplePersonDetection,
     int? inattentiveWindowSize,
     int? inattentiveConfirmCount,
@@ -284,6 +289,7 @@ class AttentivenessConfig {
       maxHeadYawDegrees: maxHeadYawDegrees ?? this.maxHeadYawDegrees,
       maxHeadPitchDegrees: maxHeadPitchDegrees ?? this.maxHeadPitchDegrees,
       eyeOpenThreshold: eyeOpenThreshold ?? this.eyeOpenThreshold,
+      smileThreshold: smileThreshold ?? this.smileThreshold,
       enableMultiplePersonDetection:
           enableMultiplePersonDetection ?? this.enableMultiplePersonDetection,
       inattentiveWindowSize:

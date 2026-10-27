@@ -50,10 +50,26 @@ class _ExampleAppState extends State<ExampleApp> {
       navigatorKey: _navigatorKey,
       home: Scaffold(
         appBar: AppBar(title: const Text('ekkademy_gazedetection example')),
-        body: ValueListenableBuilder<AttentivenessStatus>(
-          valueListenable: _monitor.status,
-          builder: (context, status, _) => Center(
-            child: Text('Status: $status'),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ValueListenableBuilder<AttentivenessStatus>(
+                valueListenable: _monitor.status,
+                builder: (context, status, _) => Text(
+                  'Status: $status',
+                  style: const TextStyle(fontSize: 18),
+                ),
+              ),
+              const SizedBox(height: 12),
+              ValueListenableBuilder<FaceEmotion>(
+                valueListenable: _monitor.emotion,
+                builder: (context, emotion, _) => Text(
+                  'Emotion: ${emotion.name}',
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
           ),
         ),
       ),

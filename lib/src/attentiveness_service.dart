@@ -230,6 +230,7 @@ class AttentivenessService {
         status: AttentivenessStatus.faceNotDetected,
         timestamp: now,
         faceCount: 0,
+        emotion: FaceEmotion.unknown,
       );
     }
 
@@ -247,6 +248,15 @@ class AttentivenessService {
     final pitch = face.headEulerAngleX ?? 0;
     final leftEye = face.leftEyeOpenProbability;
     final rightEye = face.rightEyeOpenProbability;
+    final smile = face.smilingProbability;
+
+    final emotion = AttentivenessResult.computeEmotion(
+      smilingProbability: smile,
+      leftEyeOpenProbability: leftEye,
+      rightEyeOpenProbability: rightEye,
+      smileThreshold: config.smileThreshold,
+      faceDetected: true,
+    );
 
     // More than one face in frame — someone else is with the learner, or
     // looking over their shoulder. This takes priority over the single-face
@@ -260,6 +270,8 @@ class AttentivenessService {
         headEulerX: pitch,
         leftEyeOpenProbability: leftEye,
         rightEyeOpenProbability: rightEye,
+        smilingProbability: smile,
+        emotion: emotion,
         faceCount: faces.length,
         timestamp: now,
       );
@@ -292,6 +304,8 @@ class AttentivenessService {
       headEulerX: pitch,
       leftEyeOpenProbability: leftEye,
       rightEyeOpenProbability: rightEye,
+      smilingProbability: smile,
+      emotion: emotion,
       faceCount: faces.length,
       timestamp: now,
     );
