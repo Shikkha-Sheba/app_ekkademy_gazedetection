@@ -27,29 +27,29 @@ enum AttentivenessStatus {
   unknown,
 }
 
-/// Detected emotion or facial expression derived from face probabilities.
+/// Detected facial emotion derived from face probabilities and head pose.
 enum FaceEmotion {
-  /// High smiling probability (smile / happy).
+  /// Face showing downward head pitch, narrowed eyes, or low smile.
+  angry,
+
+  /// Face showing high smile probability.
   happy,
 
-  /// Low smiling probability and reduced eye openness or sad facial traits.
-  sad,
-
-  /// High eye openness and wide eyes.
-  surprised,
-
-  /// One eye open, one eye closed.
-  wink,
-
-  /// Both eyes closed.
-  eyesClosed,
-
-  /// Normal, relaxed expression.
+  /// Normal, relaxed face expression.
   neutral,
 
-  /// Expression could not be determined or no face detected.
-  unknown,
+  /// Wide open eyes (high eye-open probability) and raised head pitch.
+  surprised,
+
+  /// Head tilted (yaw/roll angle) with asymmetric eyes or low smile.
+  confused,
+
+  /// Emotion could not be computed or no face detected.
+  unknown;
 }
+
+/// Alias for facial expression type.
+typedef ExpressionType = FaceEmotion;
 
 /// Result of analysing a single camera frame.
 class AttentivenessResult {
@@ -68,14 +68,20 @@ class AttentivenessResult {
   /// if no face was found.
   final double? headEulerX;
 
+  /// Head rotation relative to camera plane in degrees (roll). Null if no face.
+  final double? headEulerZ;
+
   final double? leftEyeOpenProbability;
   final double? rightEyeOpenProbability;
 
   /// Probability that the face is smiling (0.0 to 1.0). Null if not computed.
   final double? smilingProbability;
 
-  /// The facial expression / emotion detected from the face probabilities.
+  /// The facial emotion detected from face probabilities and head angles.
   final FaceEmotion emotion;
+
+  /// Alias for [emotion] as expression type.
+  ExpressionType get expression => emotion;
 
   final DateTime timestamp;
 
@@ -85,17 +91,21 @@ class AttentivenessResult {
     this.faceCount = 0,
     this.headEulerY,
     this.headEulerX,
+    this.headEulerZ,
     this.leftEyeOpenProbability,
     this.rightEyeOpenProbability,
     this.smilingProbability,
     this.emotion = FaceEmotion.unknown,
   });
 
-  /// Derives [FaceEmotion] based on smiling probability and eye probabilities.
+  /// Derives [FaceEmotion] based on facial features, probabilities, and head angles.
   static FaceEmotion computeEmotion({
     required double? smilingProbability,
     required double? leftEyeOpenProbability,
     required double? rightEyeOpenProbability,
+    double? headEulerX,
+    double? headEulerY,
+    double? headEulerZ,
     double smileThreshold = 0.55,
     bool faceDetected = true,
   }) {
@@ -104,34 +114,51 @@ class AttentivenessResult {
     final smile = smilingProbability ?? 0.0;
     final leftEye = leftEyeOpenProbability ?? 1.0;
     final rightEye = rightEyeOpenProbability ?? 1.0;
+    final pitch = headEulerX ?? 0.0;
+    final yaw = (headEulerY ?? 0.0).abs();
+    final roll = (headEulerZ ?? 0.0).abs();
 
     if (smilingProbability != null && smile >= smileThreshold) {
       return FaceEmotion.happy;
     }
 
-    final isLeftClosed = leftEyeOpenProbability != null && leftEye < 0.25;
-    final isRightClosed = rightEyeOpenProbability != null && rightEye < 0.25;
-    final isLeftOpen = leftEyeOpenProbability != null && leftEye > 0.6;
-    final isRightOpen = rightEyeOpenProbability != null && rightEye > 0.6;
-
-    if ((isLeftClosed && isRightOpen) || (isRightClosed && isLeftOpen)) {
-      return FaceEmotion.wink;
-    }
-
-    if (isLeftClosed && isRightClosed) {
-      return FaceEmotion.eyesClosed;
-    }
-
-    if (leftEye >= 0.85 && rightEye >= 0.85 && smile < 0.4) {
+    if (leftEye >= 0.85 && rightEye >= 0.85 && smile < 0.35 && pitch > 5) {
       return FaceEmotion.surprised;
     }
 
-    if (smilingProbability != null && smile < 0.1 && leftEye < 0.5 && rightEye < 0.5) {
-      return FaceEmotion.sad;
+    final eyeDiff = (leftEye - rightEye).abs();
+    if ((roll > 10 || yaw > 12) && smile < 0.3 && (eyeDiff > 0.15 || pitch.abs() > 8)) {
+      return FaceEmotion.confused;
+    }
+
+    if ((pitch < -10 || (leftEye < 0.5 && rightEye < 0.5)) && smile < 0.15) {
+      return FaceEmotion.angry;
     }
 
     return FaceEmotion.neutral;
   }
+
+  /// Alias for [computeEmotion].
+  static ExpressionType computeExpression({
+    required double? smilingProbability,
+    required double? leftEyeOpenProbability,
+    required double? rightEyeOpenProbability,
+    double? headEulerX,
+    double? headEulerY,
+    double? headEulerZ,
+    double smileThreshold = 0.55,
+    bool faceDetected = true,
+  }) =>
+      computeEmotion(
+        smilingProbability: smilingProbability,
+        leftEyeOpenProbability: leftEyeOpenProbability,
+        rightEyeOpenProbability: rightEyeOpenProbability,
+        headEulerX: headEulerX,
+        headEulerY: headEulerY,
+        headEulerZ: headEulerZ,
+        smileThreshold: smileThreshold,
+        faceDetected: faceDetected,
+      );
 
   bool get isAttentive => status == AttentivenessStatus.attentive;
 
@@ -141,7 +168,7 @@ class AttentivenessResult {
   @override
   String toString() =>
       'AttentivenessResult(status: $status, faceCount: $faceCount, '
-      'yaw: $headEulerY, pitch: $headEulerX, '
+      'yaw: $headEulerY, pitch: $headEulerX, roll: $headEulerZ, '
       'leftEye: $leftEyeOpenProbability, rightEye: $rightEyeOpenProbability, '
       'smiling: $smilingProbability, emotion: $emotion)';
 }
