@@ -31,3 +31,5 @@ dev_dependencies:
 
 
 flutter:
+  assets:
+    - assets/models/emotion.tflite

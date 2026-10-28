@@ -167,10 +167,17 @@ class AttentivenessConfig {
     FaceEmotion.neutral,
   ];
 
-  /// Flutter asset path of the TFLite emotion model (declared under
-  /// `flutter: assets:` in the consuming app). When set, the primary
-  /// face is cropped and classified on-device on every processed frame.
-  /// When null, emotion falls back to a smile-only happy/neutral check.
+  /// Emotion model bundled inside this package (mini_XCEPTION, FER2013,
+  /// 64x64 grayscale input, preprocessing (pixel - 127.5) / 127.5).
+  static const String defaultEmotionModelAsset =
+      'packages/ekkademy_gazedetection/assets/models/emotion.tflite';
+
+  /// Flutter asset path of the TFLite emotion model. Defaults to the model
+  /// bundled with this package, so the consuming app declares nothing. To
+  /// use your own model, declare it in the app's `flutter: assets:` and set
+  /// this together with [emotionLabels], [emotionInputMean] and
+  /// [emotionInputStd]. If the model fails to load, emotion falls back to a
+  /// smile-only happy/neutral check and gaze detection keeps working.
   final String? emotionModelAsset;
 
   /// Output class order of the model. Must match the model's output size.
@@ -180,7 +187,8 @@ class AttentivenessConfig {
   final double emotionMinConfidence;
 
   /// Input normalisation: (pixel - mean) / std, with pixel in 0-255. The
-  /// defaults (0, 255) give 0-1 inputs; use (127.5, 127.5) for -1..1.
+  /// defaults (127.5, 127.5) match the bundled model (inputs in -1..1);
+  /// use (0, 255) for models expecting 0-1 inputs.
   final double emotionInputMean;
   final double emotionInputStd;
 
@@ -191,11 +199,11 @@ class AttentivenessConfig {
     this.maxHeadPitchDegrees = 20,
     this.eyeOpenThreshold = 0.4,
     this.smileThreshold = 0.55,
-    this.emotionModelAsset,
+    this.emotionModelAsset = defaultEmotionModelAsset,
     this.emotionLabels = defaultEmotionLabels,
     this.emotionMinConfidence = 0.4,
-    this.emotionInputMean = 0,
-    this.emotionInputStd = 255,
+    this.emotionInputMean = 127.5,
+    this.emotionInputStd = 127.5,
     this.multiplePersonsWindowSize = 3,
     this.multiplePersonsConfirmCount = 3,
     this.enableMultiplePersonDetection = true,

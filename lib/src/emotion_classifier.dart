@@ -4,13 +4,15 @@
 // single image input ([1, H, W, 1] or [1, H, W, 3]) and a [1, N] class
 // output, N == AttentivenessConfig.emotionLabels.length.
 //
-// The model file is NOT bundled with this package: declare it under
-// `flutter: assets:` in the consuming app and pass its path via
+// The default model (mini_XCEPTION, FER2013) ships inside this package at
+// assets/models/emotion.tflite. A custom model can be used by declaring it
+// in the consuming app and passing its path via
 // AttentivenessConfig.emotionModelAsset.
 
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
 import 'attentiveness_models.dart';
@@ -75,7 +77,14 @@ class TfliteEmotionClassifier {
   Future<void> load() async {
     if (_interpreter != null) return;
     final options = InterpreterOptions()..threads = threads;
-    final interpreter = await Interpreter.fromAsset(assetPath, options: options);
+    // Load the bytes through rootBundle so both app assets
+    // ('assets/x.tflite') and package assets
+    // ('packages/<pkg>/assets/x.tflite') resolve the same way.
+    final data = await rootBundle.load(assetPath);
+    final interpreter = Interpreter.fromBuffer(
+      data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      options: options,
+    );
 
     final inShape = interpreter.getInputTensor(0).shape;
     final outShape = interpreter.getOutputTensor(0).shape;
