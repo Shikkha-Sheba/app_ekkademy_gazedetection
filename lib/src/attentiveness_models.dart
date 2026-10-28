@@ -44,7 +44,17 @@ enum FaceEmotion {
   /// Head tilted (yaw/roll angle) with asymmetric eyes or low smile.
   confused,
 
-  /// Emotion could not be computed or no face detected.
+  /// Model class "disgust". Only produced by the TFLite model.
+  disgusted,
+
+  /// Model class "fear". Only produced by the TFLite model.
+  fearful,
+
+  /// Model class "sad". Only produced by the TFLite model.
+  sad,
+
+  /// Emotion could not be computed, no face detected, or the model's top
+  /// score was below `AttentivenessConfig.emotionMinConfidence`.
   unknown;
 }
 
@@ -80,6 +90,10 @@ class AttentivenessResult {
   /// The facial emotion detected from face probabilities and head angles.
   final FaceEmotion emotion;
 
+  /// Model score (0.0-1.0) of [emotion]. Null when no TFLite model is
+  /// configured (smile-only fallback) or no face was found.
+  final double? emotionConfidence;
+
   /// Alias for [emotion] as expression type.
   ExpressionType get expression => emotion;
 
@@ -96,6 +110,7 @@ class AttentivenessResult {
     this.rightEyeOpenProbability,
     this.smilingProbability,
     this.emotion = FaceEmotion.unknown,
+    this.emotionConfidence,
   });
 
   /// Derives [FaceEmotion] based on facial features, probabilities, and head angles.
@@ -170,5 +185,6 @@ class AttentivenessResult {
       'AttentivenessResult(status: $status, faceCount: $faceCount, '
       'yaw: $headEulerY, pitch: $headEulerX, roll: $headEulerZ, '
       'leftEye: $leftEyeOpenProbability, rightEye: $rightEyeOpenProbability, '
-      'smiling: $smilingProbability, emotion: $emotion)';
+      'smiling: $smilingProbability, emotion: $emotion, '
+      'emotionConfidence: $emotionConfidence)';
 }

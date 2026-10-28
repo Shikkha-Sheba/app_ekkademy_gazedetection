@@ -54,6 +54,8 @@
 // [classroomFast] for a preset tuned to a 15s push interval.
 
 
+import 'attentiveness_models.dart';
+
 class AttentivenessConfig {
   /// Absolute floor for [sampleInterval]. Enforced by an assertion in the
   /// constructor so frames can never be processed more often than this,
@@ -154,6 +156,34 @@ class AttentivenessConfig {
   /// packages don't bundle runtime assets for their dependents by default.
   final String? alertSoundAsset;
 
+  /// Default class order of FER2013-trained models (e.g. mini_XCEPTION).
+  static const List<FaceEmotion> defaultEmotionLabels = [
+    FaceEmotion.angry,
+    FaceEmotion.disgusted,
+    FaceEmotion.fearful,
+    FaceEmotion.happy,
+    FaceEmotion.sad,
+    FaceEmotion.surprised,
+    FaceEmotion.neutral,
+  ];
+
+  /// Flutter asset path of the TFLite emotion model (declared under
+  /// `flutter: assets:` in the consuming app). When set, the primary
+  /// face is cropped and classified on-device on every processed frame.
+  /// When null, emotion falls back to a smile-only happy/neutral check.
+  final String? emotionModelAsset;
+
+  /// Output class order of the model. Must match the model's output size.
+  final List<FaceEmotion> emotionLabels;
+
+  /// Top score below this yields [FaceEmotion.unknown] instead of a guess.
+  final double emotionMinConfidence;
+
+  /// Input normalisation: (pixel - mean) / std, with pixel in 0-255. The
+  /// defaults (0, 255) give 0-1 inputs; use (127.5, 127.5) for -1..1.
+  final double emotionInputMean;
+  final double emotionInputStd;
+
   AttentivenessConfig({
     this.sampleInterval = const Duration(seconds: 10),
     this.multiplePersonsCheckInterval = minMultiplePersonsCheckInterval,
@@ -161,6 +191,11 @@ class AttentivenessConfig {
     this.maxHeadPitchDegrees = 20,
     this.eyeOpenThreshold = 0.4,
     this.smileThreshold = 0.55,
+    this.emotionModelAsset,
+    this.emotionLabels = defaultEmotionLabels,
+    this.emotionMinConfidence = 0.4,
+    this.emotionInputMean = 0,
+    this.emotionInputStd = 255,
     this.multiplePersonsWindowSize = 3,
     this.multiplePersonsConfirmCount = 3,
     this.enableMultiplePersonDetection = true,
@@ -274,6 +309,11 @@ class AttentivenessConfig {
     double? maxHeadPitchDegrees,
     double? eyeOpenThreshold,
     double? smileThreshold,
+    String? emotionModelAsset,
+    List<FaceEmotion>? emotionLabels,
+    double? emotionMinConfidence,
+    double? emotionInputMean,
+    double? emotionInputStd,
     bool? enableMultiplePersonDetection,
     int? inattentiveWindowSize,
     int? inattentiveConfirmCount,
@@ -290,6 +330,11 @@ class AttentivenessConfig {
       maxHeadPitchDegrees: maxHeadPitchDegrees ?? this.maxHeadPitchDegrees,
       eyeOpenThreshold: eyeOpenThreshold ?? this.eyeOpenThreshold,
       smileThreshold: smileThreshold ?? this.smileThreshold,
+      emotionModelAsset: emotionModelAsset ?? this.emotionModelAsset,
+      emotionLabels: emotionLabels ?? this.emotionLabels,
+      emotionMinConfidence: emotionMinConfidence ?? this.emotionMinConfidence,
+      emotionInputMean: emotionInputMean ?? this.emotionInputMean,
+      emotionInputStd: emotionInputStd ?? this.emotionInputStd,
       enableMultiplePersonDetection:
           enableMultiplePersonDetection ?? this.enableMultiplePersonDetection,
       inattentiveWindowSize:

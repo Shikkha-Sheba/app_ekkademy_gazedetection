@@ -2,10 +2,11 @@ name: ekkademy_gazedetection
 description: >
   On-device, camera-based attentiveness / gaze detection for Flutter.
   Detects distraction (looking away), closed eyes, missing face, and
-  multiple persons in frame using ML Kit face detection. Not tied to any
-  particular screen — use it from a video player, live class, audio
+  multiple persons in frame using ML Kit face detection, with optional
+  on-device facial emotion classification via a TFLite model. Not tied to
+  any particular screen — use it from a video player, live class, audio
   player, or quiz.
-version: 0.1.0
+version: 0.2.0
 homepage: https://github.com/Shikkha-Sheba/app_ekkademy_gazedetection
 publish_to: 'none' # remove this line if/when you actually publish to pub.dev
 
@@ -21,6 +22,7 @@ dependencies:
   permission_handler: ^13.0.2
   just_audio: ^0.10.6
   camera: ^0.12.1
+  tflite_flutter: ^0.11.0
 
 dev_dependencies:
   flutter_test:
@@ -29,4 +31,3 @@ dev_dependencies:
 
 
 flutter:
-

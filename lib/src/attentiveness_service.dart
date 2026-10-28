@@ -24,6 +24,8 @@ import 'package:permission_handler/permission_handler.dart';
 
 import 'attentiveness_config.dart';
 import 'attentiveness_models.dart';
+import 'emotion_classifier.dart';
+import 'emotion_face_cropper.dart';
 
 class AttentivenessService {
   final AttentivenessConfig config;
@@ -40,6 +42,7 @@ class AttentivenessService {
   bool _isProcessing = false;
   DateTime _lastEmit = DateTime.fromMillisecondsSinceEpoch(0);
   bool _externalRunning = false;
+  TfliteEmotionClassifier? _emotionClassifier;
 
   /// True while the most recently processed frame showed more than one
   /// face. While true, [_onFrame] throttles using
@@ -121,6 +124,7 @@ class AttentivenessService {
         performanceMode: FaceDetectorMode.fast,
       ),
     );
+    await _initEmotionClassifier();
     _externalRunning = true;
   }
 
@@ -138,7 +142,7 @@ class AttentivenessService {
         '\n================>>>>>>>>>>📷 Image processed | Running: ${_elapsedSeconds}s | '
         'Faces: ${faces.length} | Processing: ${stopwatch.elapsedMilliseconds} ms',
       );
-      if (!_controller.isClosed) _controller.add(_interpret(faces));
+      if (!_controller.isClosed) _controller.add(_interpret(faces, inputImage));
     } on Exception catch (e) {
       throw StateError('AttentivenessService.pushFrame error: $e');
     } finally {
@@ -190,6 +194,7 @@ class AttentivenessService {
       ),
     );
 
+    await _initEmotionClassifier();
     await _cameraController!.startImageStream(_onFrame);
   }
 
@@ -212,7 +217,7 @@ class AttentivenessService {
       if (inputImage == null) return;
 
       final faces = await _faceDetector!.processImage(inputImage);
-      final result = _interpret(faces);
+      final result = _interpret(faces, inputImage);
       _multiplePersonFastMode = config.enableMultiplePersonDetection &&
           result.status == AttentivenessStatus.multiplePersonsDetected;
       if (_controller.isClosed) return;
@@ -222,7 +227,7 @@ class AttentivenessService {
     }
   }
 
-  AttentivenessResult _interpret(List<Face> faces) {
+  AttentivenessResult _interpret(List<Face> faces, InputImage inputImage) {
     final now = DateTime.now();
 
     if (faces.isEmpty) {
@@ -250,13 +255,10 @@ class AttentivenessService {
     final rightEye = face.rightEyeOpenProbability;
     final smile = face.smilingProbability;
 
-    final emotion = AttentivenessResult.computeEmotion(
-      smilingProbability: smile,
-      leftEyeOpenProbability: leftEye,
-      rightEyeOpenProbability: rightEye,
-      smileThreshold: config.smileThreshold,
-      faceDetected: true,
-    );
+    final roll = face.headEulerAngleZ ?? 0;
+    final prediction = _predictEmotion(face, inputImage);
+    final emotion = prediction.emotion;
+    final emotionConfidence = prediction.confidence;
 
     // More than one face in frame — someone else is with the learner, or
     // looking over their shoulder. This takes priority over the single-face
@@ -270,8 +272,10 @@ class AttentivenessService {
         headEulerX: pitch,
         leftEyeOpenProbability: leftEye,
         rightEyeOpenProbability: rightEye,
+        headEulerZ: roll,
         smilingProbability: smile,
         emotion: emotion,
+        emotionConfidence: emotionConfidence,
         faceCount: faces.length,
         timestamp: now,
       );
@@ -304,11 +308,62 @@ class AttentivenessService {
       headEulerX: pitch,
       leftEyeOpenProbability: leftEye,
       rightEyeOpenProbability: rightEye,
+      headEulerZ: roll,
       smilingProbability: smile,
       emotion: emotion,
+      emotionConfidence: emotionConfidence,
       faceCount: faces.length,
       timestamp: now,
     );
+  }
+
+  /// Loads the TFLite emotion model if [AttentivenessConfig.emotionModelAsset]
+  /// is set. A load failure only disables the model (emotion falls back to
+  /// the smile-only check); gaze detection keeps working.
+  Future<void> _initEmotionClassifier() async {
+    final asset = config.emotionModelAsset;
+    if (asset == null || _emotionClassifier != null) return;
+    try {
+      final classifier = TfliteEmotionClassifier(
+        assetPath: asset,
+        labels: config.emotionLabels,
+        inputMean: config.emotionInputMean,
+        inputStd: config.emotionInputStd,
+        minConfidence: config.emotionMinConfidence,
+      );
+      await classifier.load();
+      _emotionClassifier = classifier;
+    } on Object catch (e) {
+      print('AttentivenessService: emotion model failed to load: $e');
+    }
+  }
+
+  /// Emotion of the primary [face]: TFLite model when loaded, otherwise a
+  /// smile-only happy/neutral fallback (ML Kit cannot classify emotions).
+  EmotionPrediction _predictEmotion(Face face, InputImage inputImage) {
+    final classifier = _emotionClassifier;
+    if (classifier == null) {
+      final smile = face.smilingProbability;
+      if (smile == null) return EmotionPrediction.unknown;
+      return smile >= config.smileThreshold
+          ? EmotionPrediction(emotion: FaceEmotion.happy, confidence: smile)
+          : EmotionPrediction(
+              emotion: FaceEmotion.neutral,
+              confidence: 1 - smile,
+            );
+    }
+    try {
+      final crop = EmotionFaceCropper.cropGray(
+        image: inputImage,
+        faceBox: face.boundingBox,
+        size: classifier.inputSize,
+      );
+      if (crop == null) return EmotionPrediction.unknown;
+      return classifier.classify(crop);
+    } on Object catch (e) {
+      print('AttentivenessService: emotion classify error: $e');
+      return EmotionPrediction.unknown;
+    }
   }
 
   /// Converts a raw [CameraImage] into the format ML Kit expects.
@@ -346,6 +401,8 @@ class AttentivenessService {
     _logTimer?.cancel();
     _logTimer = null;
     _multiplePersonFastMode = false;
+    _emotionClassifier?.close();
+    _emotionClassifier = null;
     if (!_ownsCamera) {
       await _faceDetector?.close();
       _faceDetector = null;
